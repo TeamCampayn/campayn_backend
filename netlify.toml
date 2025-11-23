@@ -1,0 +1,26 @@
+[build]
+  command = "npm install"
+  functions = "netlify-functions"
+  publish = "."
+
+[functions]
+  node_bundler = "esbuild"
+  
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+# Environment variables required (set these in Netlify dashboard):
+# PORT=4000
+# NODE_ENV=production
+# FRONTEND_URL=https://your-frontend-url.netlify.app
+# SUPABASE_URL=https://rxsgvhstplsjahhvlhss.supabase.co
+# SUPABASE_SERVICE_KEY=your-service-key
+# IG_ACCESS_TOKEN=your-ig-token
+# IG_BUSINESS_ID=your-ig-business-id

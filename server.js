@@ -15,14 +15,19 @@ const app = express();
 const server = http.createServer(app);
 
 // CORS configuration for frontend connection
+const allowedOrigins = [
+  process.env.FRONTEND_URL || "http://localhost:8080",
+  "http://localhost:5173",
+  "http://localhost:8080",
+  "http://localhost:3000",
+  "https://zestful-campaign-craft-69.netlify.app",
+  "https://campayn.in",
+  "https://www.campayn.in"
+].filter(Boolean);
+
 const io = socketIo(server, {
   cors: {
-    origin: [
-      process.env.FRONTEND_URL || "http://localhost:8080",
-      "http://localhost:5173",
-      "http://localhost:8080",
-      "http://localhost:3000"
-    ],
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -30,12 +35,16 @@ const io = socketIo(server, {
 
 // Middleware
 app.use(cors({
-  origin: [
-    process.env.FRONTEND_URL || "http://localhost:8080",
-    "http://localhost:5173", 
-    "http://localhost:8080",
-    "http://localhost:3000"
-  ],
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, etc)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin) || origin.includes('netlify.app')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true
 }));
 app.use(express.json());
@@ -312,9 +321,9 @@ app.use('/api', creatorsRouter);
 const campaignsRouter = require('./routes/campaigns');
 app.use(campaignsRouter);
 
-// Payment Routes (Razorpay)
-const paymentsRouter = require('./routes/payments');
-app.use(paymentsRouter);
+// Razorpay Payment Link Routes
+const razorpayLinkRouter = require('./routes/razorpay-link');
+app.use(razorpayLinkRouter);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
