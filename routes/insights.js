@@ -164,34 +164,27 @@ const getFollowerHistory = async (username) => {
   return followerData.get(username) || [];
 };
 
-// Fallback: Get creator data from database when Instagram API fails
-const getCreatorFromDatabase = async (username) => {
-  try {
-    const cleanUsername = username.replace(/^@/, '');
-    const { data, error } = await supabase
-      .from('creators')
-      .select('*')
-      .ilike('ig_handle', cleanUsername)
-      .single();
-    
-    if (error) throw error;
-    return data;
-  } catch (error) {
-    console.error('Database fallback error:', error);
-    return null;
-  }
-};
-
 // Main insights endpoint
 router.get('/insights', async (req, res) => {
     const { username } = req.query;
     const ACCESS_TOKEN = process.env.IG_ACCESS_TOKEN;
     const OUR_IG_ID = process.env.IG_BUSINESS_ID;
 
+    console.log('📊 Instagram Insights Request:', {
+        username,
+        hasAccessToken: !!ACCESS_TOKEN,
+        hasBusinessId: !!OUR_IG_ID,
+        accessTokenLength: ACCESS_TOKEN?.length,
+        businessId: OUR_IG_ID
+    });
+
     // Validate environment variables
     if (!ACCESS_TOKEN || !OUR_IG_ID) {
+        console.error('❌ Missing Instagram API credentials');
         return res.status(500).json({ 
-            error: 'Missing Instagram API credentials. Please check environment variables.' 
+            error: 'Instagram API is not configured',
+            details: 'Missing IG_ACCESS_TOKEN or IG_BUSINESS_ID environment variables',
+            setup_guide: 'Please follow the Instagram API setup guide to configure credentials'
         });
     }
 
@@ -391,62 +384,50 @@ router.get('/insights', async (req, res) => {
         });
 
     } catch (err) {
-        console.error('Instagram API Error:', err.response?.data || err.message);
-        console.log('Attempting database fallback for username:', req.query.username);
+        console.error('❌ Instagram API Error:', {
+            username: req.query.username,
+            error: err.response?.data || err.message,
+            status: err.response?.status,
+            statusText: err.response?.statusText
+        });
         
-        // Fallback to database
-        const dbCreator = await getCreatorFromDatabase(req.query.username);
+        // Provide detailed error information for debugging
+        const errorDetails = err.response?.data?.error || {};
+        const errorMessage = errorDetails.message || err.message;
+        const errorCode = errorDetails.code || err.response?.status;
         
-        if (dbCreator) {
-            console.log('Using database fallback data for:', dbCreator.ig_handle);
-            // Return data from database in the same format as Instagram API
-            return res.json({
-                profile: {
-                    username: dbCreator.ig_handle?.replace(/^@/, '') || null,
-                    id: dbCreator.id || null,
-                    name: dbCreator.name || null,
-                    profile_picture_url: dbCreator.profile_picture_url || null,
-                    biography: dbCreator.bio || null,
-                    website: null,
-                    followers_count: dbCreator.followers_count || 0,
-                    following_count: null,
-                    media_count: null,
-                    category: dbCreator.category || null
-                },
-                metrics: {
-                    engagementRate: dbCreator.engagement_rate || 0,
-                    avgLikes: dbCreator.avg_likes || 0,
-                    avgComments: dbCreator.avg_comments || 0,
-                    avgViews: 0,
-                    hashtagStats: [],
-                    captionStats: {
-                        avgLength: 0,
-                        percentLongCaptions100: 0
-                    },
-                    activeFollowerEstimate: null,
-                    growth: {
-                        trend: 'insufficient_data',
-                        growthRate: 0,
-                        velocity: 0,
-                        nextMilestones: [],
-                        percentChange7d: null,
-                        percentChange30d: null
-                    },
-                    followerHistory: [],
-                    bestPostingWindow: 'No data available'
-                },
-                recentMedia: [],
-                _source: 'database_fallback'
-            });
-        }
-        
-        // If no database fallback available, return error
+        // Return comprehensive error for frontend
         res.status(500).json({ 
-            error: 'Failed to fetch data from Instagram API',
-            details: err.response?.data?.error?.message || err.message
+            error: 'Failed to fetch Instagram analytics',
+            message: errorMessage,
+            errorCode: errorCode,
+            username: req.query.username,
+            details: {
+                type: errorDetails.type || 'Unknown',
+                fbtrace_id: errorDetails.fbtrace_id,
+                suggestion: getErrorSuggestion(errorCode, errorMessage)
+            },
+            timestamp: new Date().toISOString()
         });
     }
 });
+
+// Helper function to provide helpful error suggestions
+function getErrorSuggestion(code, message) {
+    if (message?.includes('Invalid user id') || message?.includes('user not found')) {
+        return 'This Instagram account may be private, deleted, or the username is incorrect. Please verify the username exists and is a business/creator account.';
+    }
+    if (code === 190 || message?.includes('token')) {
+        return 'Instagram API access token is invalid or expired. Please refresh the token in environment variables.';
+    }
+    if (code === 4 || message?.includes('rate limit')) {
+        return 'Instagram API rate limit reached. Please try again in a few minutes.';
+    }
+    if (message?.includes('business discovery')) {
+        return 'The target account must be a Business or Creator account for analytics to be available.';
+    }
+    return 'Please check Instagram API credentials and account permissions.';
+}
 
 // Specific post data endpoint
 router.get('/post-insights', async (req, res) => {
@@ -599,10 +580,19 @@ router.get('/post-insights', async (req, res) => {
         });
 
     } catch (err) {
-        console.error('Instagram API Error:', err.response?.data || err.message);
+        console.error('❌ Instagram Post Insights Error:', {
+            postUrl: req.query.postUrl,
+            username: req.query.username,
+            error: err.response?.data || err.message,
+            status: err.response?.status
+        });
+        
+        const errorDetails = err.response?.data?.error || {};
         res.status(500).json({ 
-            error: 'Failed to fetch post data from Instagram API',
-            details: err.response?.data?.error?.message || err.message
+            error: 'Failed to fetch post insights from Instagram API',
+            message: errorDetails.message || err.message,
+            details: errorDetails,
+            timestamp: new Date().toISOString()
         });
     }
 });
