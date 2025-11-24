@@ -1,6 +1,13 @@
 const express = require('express');
 const axios = require('axios');
+const { createClient } = require('@supabase/supabase-js');
 const router = express.Router();
+
+// Initialize Supabase client for database fallback
+const supabase = createClient(
+  process.env.SUPABASE_URL || '',
+  process.env.SUPABASE_SERVICE_KEY || ''
+);
 
 // Utility functions for metrics calculation
 const computeAllMetrics = (profile, media) => {
@@ -155,6 +162,24 @@ const saveFollowerCount = async (username, count) => {
 
 const getFollowerHistory = async (username) => {
   return followerData.get(username) || [];
+};
+
+// Fallback: Get creator data from database when Instagram API fails
+const getCreatorFromDatabase = async (username) => {
+  try {
+    const cleanUsername = username.replace(/^@/, '');
+    const { data, error } = await supabase
+      .from('creators')
+      .select('*')
+      .ilike('ig_handle', cleanUsername)
+      .single();
+    
+    if (error) throw error;
+    return data;
+  } catch (error) {
+    console.error('Database fallback error:', error);
+    return null;
+  }
 };
 
 // Main insights endpoint
@@ -367,6 +392,55 @@ router.get('/insights', async (req, res) => {
 
     } catch (err) {
         console.error('Instagram API Error:', err.response?.data || err.message);
+        console.log('Attempting database fallback for username:', req.query.username);
+        
+        // Fallback to database
+        const dbCreator = await getCreatorFromDatabase(req.query.username);
+        
+        if (dbCreator) {
+            console.log('Using database fallback data for:', dbCreator.ig_handle);
+            // Return data from database in the same format as Instagram API
+            return res.json({
+                profile: {
+                    username: dbCreator.ig_handle?.replace(/^@/, '') || null,
+                    id: dbCreator.id || null,
+                    name: dbCreator.name || null,
+                    profile_picture_url: dbCreator.profile_picture_url || null,
+                    biography: dbCreator.bio || null,
+                    website: null,
+                    followers_count: dbCreator.followers_count || 0,
+                    following_count: null,
+                    media_count: null,
+                    category: dbCreator.category || null
+                },
+                metrics: {
+                    engagementRate: dbCreator.engagement_rate || 0,
+                    avgLikes: dbCreator.avg_likes || 0,
+                    avgComments: dbCreator.avg_comments || 0,
+                    avgViews: 0,
+                    hashtagStats: [],
+                    captionStats: {
+                        avgLength: 0,
+                        percentLongCaptions100: 0
+                    },
+                    activeFollowerEstimate: null,
+                    growth: {
+                        trend: 'insufficient_data',
+                        growthRate: 0,
+                        velocity: 0,
+                        nextMilestones: [],
+                        percentChange7d: null,
+                        percentChange30d: null
+                    },
+                    followerHistory: [],
+                    bestPostingWindow: 'No data available'
+                },
+                recentMedia: [],
+                _source: 'database_fallback'
+            });
+        }
+        
+        // If no database fallback available, return error
         res.status(500).json({ 
             error: 'Failed to fetch data from Instagram API',
             details: err.response?.data?.error?.message || err.message
