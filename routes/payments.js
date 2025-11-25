@@ -9,17 +9,39 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// Initialize Razorpay instance
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
+// Lazy initialize Razorpay to surface configuration errors gracefully
+let razorpay = null;
+function getRazorpay() {
+  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+    return null;
+  }
+  if (!razorpay) {
+    razorpay = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
+  }
+  return razorpay;
+}
 
 // Create Razorpay Order
 router.post('/api/campaigns/:campaignId/create-payment-order', async (req, res) => {
   try {
     const { campaignId } = req.params;
-    const { amount, currency = 'INR', receipt } = req.body;
+    let { amount, currency = 'INR', receipt } = req.body;
+
+    // Validate config early
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+      return res.status(500).json({
+        success: false,
+        error: 'Payment gateway not configured',
+        error_type: 'config_error',
+        missing: {
+          RAZORPAY_KEY_ID: !process.env.RAZORPAY_KEY_ID,
+          RAZORPAY_KEY_SECRET: !process.env.RAZORPAY_KEY_SECRET
+        }
+      });
+    }
 
     // Get campaign details
     const { data: campaign, error: campaignError } = await supabase
@@ -35,10 +57,29 @@ router.post('/api/campaigns/:campaignId/create-payment-order', async (req, res) 
       });
     }
 
-    // Create Razorpay order
+    // Validate / fallback amount
+    const numericAmount = Number(amount);
+    if (!numericAmount || numericAmount <= 0) {
+      amount = Number(campaign.budget) || 0;
+    } else {
+      amount = numericAmount;
+    }
+    if (!amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid amount for order',
+        error_type: 'validation_error'
+      });
+    }
+
+    const rp = getRazorpay();
+    if (!rp) {
+      return res.status(500).json({ success: false, error: 'Failed to initialize payment gateway', error_type: 'init_error' });
+    }
+
     const options = {
-      amount: amount * 100, // amount in smallest currency unit (paise)
-      currency: currency,
+      amount: Math.round(amount * 100),
+      currency,
       receipt: receipt || `campaign_${campaignId}_${Date.now()}`,
       notes: {
         campaign_id: campaignId,
@@ -47,7 +88,18 @@ router.post('/api/campaigns/:campaignId/create-payment-order', async (req, res) 
       }
     };
 
-    const order = await razorpay.orders.create(options);
+    let order;
+    try {
+      order = await rp.orders.create(options);
+    } catch (gatewayErr) {
+      console.error('Razorpay order creation error:', gatewayErr);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to create payment order',
+        error_type: 'gateway_error',
+        gateway_details: gatewayErr?.error || { message: gatewayErr.message }
+      });
+    }
 
     // Store order in database
     const { data: paymentRecord, error: paymentError } = await supabase
@@ -112,7 +164,11 @@ router.post('/api/campaigns/:campaignId/verify-payment', async (req, res) => {
     }
 
     // Fetch payment details from Razorpay
-    const payment = await razorpay.payments.fetch(razorpay_payment_id);
+    const rp = getRazorpay();
+    if (!rp) {
+      return res.status(500).json({ success: false, error: 'Payment gateway not configured' });
+    }
+    const payment = await rp.payments.fetch(razorpay_payment_id);
 
     // Update payment record in database
     const { data: updatedPayment, error: updateError } = await supabase
@@ -364,7 +420,11 @@ router.post('/api/campaigns/:campaignId/refund-payment', async (req, res) => {
       }
     };
 
-    const refund = await razorpay.payments.refund(payment_id, refundOptions);
+    const rp = getRazorpay();
+    if (!rp) {
+      return res.status(500).json({ success: false, error: 'Payment gateway not configured' });
+    }
+    const refund = await rp.payments.refund(payment_id, refundOptions);
 
     // Update payment record
     await supabase
