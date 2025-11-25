@@ -325,6 +325,10 @@ app.use(campaignsRouter);
 const razorpayLinkRouter = require('./routes/razorpay-link');
 app.use(razorpayLinkRouter);
 
+// Razorpay Payment Gateway Routes
+const paymentsRouter = require('./routes/payments');
+app.use(paymentsRouter);
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({

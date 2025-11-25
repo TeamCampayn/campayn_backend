@@ -16,21 +16,15 @@ const razorpay = new Razorpay({
 });
 
 // Create Razorpay Order
-router.post('/api/payments/create-order', async (req, res) => {
+router.post('/api/campaigns/:campaignId/create-payment-order', async (req, res) => {
   try {
-    const { campaignId, amount, currency = 'INR' } = req.body;
-
-    if (!campaignId || !amount) {
-      return res.status(400).json({
-        success: false,
-        error: 'Campaign ID and amount are required'
-      });
-    }
+    const { campaignId } = req.params;
+    const { amount, currency = 'INR', receipt } = req.body;
 
     // Get campaign details
     const { data: campaign, error: campaignError } = await supabase
       .from('campaigns')
-      .select('*, brands(brand_name, user_id)')
+      .select('id, campaign_name, budget, brand_id')
       .eq('id', campaignId)
       .single();
 
@@ -43,40 +37,34 @@ router.post('/api/payments/create-order', async (req, res) => {
 
     // Create Razorpay order
     const options = {
-      amount: Math.round(amount * 100), // Convert to paise (smallest currency unit)
+      amount: amount * 100, // amount in smallest currency unit (paise)
       currency: currency,
-      receipt: `campaign_${campaignId}_${Date.now()}`,
+      receipt: receipt || `campaign_${campaignId}_${Date.now()}`,
       notes: {
         campaign_id: campaignId,
         campaign_name: campaign.campaign_name,
-        brand_name: campaign.brands.brand_name,
-        brand_user_id: campaign.brands.user_id,
+        brand_id: campaign.brand_id
       }
     };
 
     const order = await razorpay.orders.create(options);
 
-    // Store payment record in database
+    // Store order in database
     const { data: paymentRecord, error: paymentError } = await supabase
-      .from('campaign_payments')
-      .insert({
+      .from('payments')
+      .insert([{
         campaign_id: campaignId,
         razorpay_order_id: order.id,
         amount: amount,
         currency: currency,
-        payment_status: 'pending',
-        payment_type: 'campaign_fee',
-        created_at: new Date().toISOString(),
-      })
+        status: 'created',
+        created_at: new Date().toISOString()
+      }])
       .select()
       .single();
 
     if (paymentError) {
       console.error('Error storing payment record:', paymentError);
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to create payment record'
-      });
     }
 
     res.json({
@@ -85,87 +73,60 @@ router.post('/api/payments/create-order', async (req, res) => {
         id: order.id,
         amount: order.amount,
         currency: order.currency,
-        receipt: order.receipt,
+        receipt: order.receipt
       },
-      paymentRecordId: paymentRecord.id,
-      razorpayKeyId: process.env.RAZORPAY_KEY_ID, // Send to frontend for checkout
+      payment_record_id: paymentRecord?.id
     });
 
   } catch (error) {
     console.error('Error creating Razorpay order:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to create payment order'
+      error: 'Failed to create payment order',
+      details: error.message
     });
   }
 });
 
-// Verify Payment Signature
-router.post('/api/payments/verify', async (req, res) => {
+// Verify Razorpay Payment
+router.post('/api/campaigns/:campaignId/verify-payment', async (req, res) => {
   try {
+    const { campaignId } = req.params;
     const {
       razorpay_order_id,
       razorpay_payment_id,
-      razorpay_signature,
-      paymentRecordId,
-      campaignId,
+      razorpay_signature
     } = req.body;
 
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing payment verification parameters'
-      });
-    }
-
     // Verify signature
-    const sign = razorpay_order_id + '|' + razorpay_payment_id;
-    const expectedSign = crypto
+    const generated_signature = crypto
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(sign.toString())
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
       .digest('hex');
 
-    const isAuthentic = expectedSign === razorpay_signature;
-
-    if (!isAuthentic) {
-      // Update payment record as failed
-      await supabase
-        .from('campaign_payments')
-        .update({
-          payment_status: 'failed',
-          failure_reason: 'Invalid signature',
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', paymentRecordId);
-
+    if (generated_signature !== razorpay_signature) {
       return res.status(400).json({
         success: false,
-        error: 'Payment verification failed'
+        error: 'Invalid payment signature'
       });
     }
 
     // Fetch payment details from Razorpay
     const payment = await razorpay.payments.fetch(razorpay_payment_id);
 
-    // Update payment record
+    // Update payment record in database
     const { data: updatedPayment, error: updateError } = await supabase
-      .from('campaign_payments')
+      .from('payments')
       .update({
         razorpay_payment_id: razorpay_payment_id,
-        payment_status: 'completed',
+        razorpay_signature: razorpay_signature,
+        status: payment.status === 'captured' ? 'paid' : payment.status,
         payment_method: payment.method,
-        payment_completed_at: new Date().toISOString(),
-        payment_details: {
-          email: payment.email,
-          contact: payment.contact,
-          method: payment.method,
-          bank: payment.bank,
-          wallet: payment.wallet,
-          vpa: payment.vpa,
-        },
-        updated_at: new Date().toISOString(),
+        payment_verified_at: new Date().toISOString(),
+        payment_details: payment
       })
-      .eq('id', paymentRecordId)
+      .eq('campaign_id', campaignId)
+      .eq('razorpay_order_id', razorpay_order_id)
       .select()
       .single();
 
@@ -177,102 +138,127 @@ router.post('/api/payments/verify', async (req, res) => {
       });
     }
 
-    // Update campaign phase to content_approval (move from payment_pending)
-    await supabase
-      .from('campaigns')
-      .update({
-        phase: 'content_approval',
-        payment_status: 'paid',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', campaignId);
+    // Update campaign phase to content_approval if payment is successful
+    if (payment.status === 'captured') {
+      const { error: campaignUpdateError } = await supabase
+        .from('campaigns')
+        .update({
+          phase: 'content_approval',
+          payment_completed_at: new Date().toISOString()
+        })
+        .eq('id', campaignId);
 
-    // Log activity
-    await supabase
-      .from('campaign_activities')
-      .insert({
-        campaign_id: campaignId,
-        activity_type: 'payment_completed',
-        description: `Payment of ₹${updatedPayment.amount} completed successfully via ${payment.method}`,
-        metadata: {
-          payment_id: razorpay_payment_id,
-          order_id: razorpay_order_id,
-          amount: updatedPayment.amount,
-          method: payment.method,
-        },
-        created_at: new Date().toISOString(),
-      });
+      if (campaignUpdateError) {
+        console.error('Error updating campaign phase:', campaignUpdateError);
+      }
+
+      // Log activity
+      await supabase
+        .from('campaign_activities')
+        .insert([{
+          campaign_id: campaignId,
+          user_id: payment.notes?.brand_id || 'system',
+          user_type: 'brand',
+          activity_type: 'payment_completed',
+          description: `Payment of ₹${payment.amount / 100} completed successfully`,
+          metadata: {
+            payment_id: razorpay_payment_id,
+            order_id: razorpay_order_id,
+            amount: payment.amount / 100,
+            method: payment.method
+          }
+        }]);
+    }
 
     res.json({
       success: true,
       message: 'Payment verified successfully',
-      payment: updatedPayment,
+      payment: {
+        id: razorpay_payment_id,
+        order_id: razorpay_order_id,
+        status: payment.status,
+        amount: payment.amount / 100,
+        method: payment.method
+      }
     });
 
   } catch (error) {
     console.error('Error verifying payment:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Payment verification failed'
+      error: 'Failed to verify payment',
+      details: error.message
     });
   }
 });
 
-// Handle Payment Failure
-router.post('/api/payments/failed', async (req, res) => {
+// Get Payment Status
+router.get('/api/campaigns/:campaignId/payment-status', async (req, res) => {
   try {
-    const { paymentRecordId, campaignId, error } = req.body;
+    const { campaignId } = req.params;
 
-    // Update payment record
-    await supabase
-      .from('campaign_payments')
-      .update({
-        payment_status: 'failed',
-        failure_reason: error?.description || 'Payment failed',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', paymentRecordId);
+    const { data: payment, error } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('campaign_id', campaignId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
 
-    // Log activity
-    await supabase
-      .from('campaign_activities')
-      .insert({
-        campaign_id: campaignId,
-        activity_type: 'payment_failed',
-        description: `Payment failed: ${error?.description || 'Unknown error'}`,
-        metadata: { error },
-        created_at: new Date().toISOString(),
+    if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
+      console.error('Error fetching payment:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch payment status'
       });
+    }
+
+    if (!payment) {
+      return res.json({
+        success: true,
+        payment: null,
+        message: 'No payment found for this campaign'
+      });
+    }
 
     res.json({
       success: true,
-      message: 'Payment failure recorded'
+      payment: {
+        id: payment.id,
+        order_id: payment.razorpay_order_id,
+        payment_id: payment.razorpay_payment_id,
+        amount: payment.amount,
+        currency: payment.currency,
+        status: payment.status,
+        payment_method: payment.payment_method,
+        created_at: payment.created_at,
+        verified_at: payment.payment_verified_at
+      }
     });
 
   } catch (error) {
-    console.error('Error recording payment failure:', error);
+    console.error('Error fetching payment status:', error);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: 'Failed to fetch payment status',
+      details: error.message
     });
   }
 });
 
 // Razorpay Webhook Handler
-router.post('/api/payments/webhook', async (req, res) => {
+router.post('/api/webhooks/razorpay', async (req, res) => {
   try {
-    const webhookSignature = req.headers['x-razorpay-signature'];
-    const webhookBody = JSON.stringify(req.body);
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const signature = req.headers['x-razorpay-signature'];
 
     // Verify webhook signature
-    const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
-      .update(webhookBody)
+    const generated_signature = crypto
+      .createHmac('sha256', webhookSecret)
+      .update(JSON.stringify(req.body))
       .digest('hex');
 
-    const isAuthentic = expectedSignature === webhookSignature;
-
-    if (!isAuthentic) {
+    if (generated_signature !== signature) {
       return res.status(400).json({
         success: false,
         error: 'Invalid webhook signature'
@@ -280,154 +266,141 @@ router.post('/api/payments/webhook', async (req, res) => {
     }
 
     const event = req.body.event;
-    const payloadData = req.body.payload.payment.entity;
+    const payload = req.body.payload.payment.entity;
 
-    console.log('Razorpay Webhook Event:', event);
+    console.log('Razorpay webhook received:', event);
 
+    // Handle different events
     switch (event) {
       case 'payment.captured':
-        // Payment was successful
+        // Update payment status
         await supabase
-          .from('campaign_payments')
+          .from('payments')
           .update({
-            payment_status: 'completed',
-            razorpay_payment_id: payloadData.id,
-            payment_completed_at: new Date(payloadData.created_at * 1000).toISOString(),
+            status: 'paid',
+            razorpay_payment_id: payload.id,
+            payment_verified_at: new Date().toISOString(),
+            payment_details: payload
           })
-          .eq('razorpay_order_id', payloadData.order_id);
+          .eq('razorpay_order_id', payload.order_id);
+
+        // Update campaign phase
+        const campaignId = payload.notes?.campaign_id;
+        if (campaignId) {
+          await supabase
+            .from('campaigns')
+            .update({
+              phase: 'content_approval',
+              payment_completed_at: new Date().toISOString()
+            })
+            .eq('id', campaignId);
+        }
         break;
 
       case 'payment.failed':
-        // Payment failed
         await supabase
-          .from('campaign_payments')
+          .from('payments')
           .update({
-            payment_status: 'failed',
-            failure_reason: payloadData.error_description,
+            status: 'failed',
+            payment_details: payload
           })
-          .eq('razorpay_order_id', payloadData.order_id);
+          .eq('razorpay_order_id', payload.order_id);
         break;
 
-      case 'order.paid':
-        // Order completed
-        console.log('Order paid:', payloadData.id);
+      case 'refund.created':
+        await supabase
+          .from('payments')
+          .update({
+            status: 'refunded',
+            refund_details: payload
+          })
+          .eq('razorpay_payment_id', payload.payment_id);
         break;
 
       default:
         console.log('Unhandled webhook event:', event);
     }
 
-    res.json({ success: true });
+    res.json({ success: true, message: 'Webhook processed' });
 
   } catch (error) {
-    console.error('Webhook error:', error);
+    console.error('Error processing webhook:', error);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: 'Failed to process webhook',
+      details: error.message
     });
   }
 });
 
-// Get Payment Details
-router.get('/api/payments/:campaignId', async (req, res) => {
+// Refund Payment (Admin only)
+router.post('/api/campaigns/:campaignId/refund-payment', async (req, res) => {
   try {
     const { campaignId } = req.params;
+    const { payment_id, amount, reason } = req.body;
 
-    const { data: payments, error } = await supabase
-      .from('campaign_payments')
+    // Fetch payment record
+    const { data: payment, error: paymentError } = await supabase
+      .from('payments')
       .select('*')
       .eq('campaign_id', campaignId)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      throw error;
-    }
-
-    res.json({
-      success: true,
-      payments: payments || []
-    });
-
-  } catch (error) {
-    console.error('Error fetching payments:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Refund Payment
-router.post('/api/payments/refund', async (req, res) => {
-  try {
-    const { paymentId, amount, reason } = req.body;
-
-    // Get payment record
-    const { data: payment, error: fetchError } = await supabase
-      .from('campaign_payments')
-      .select('*')
-      .eq('id', paymentId)
+      .eq('razorpay_payment_id', payment_id)
       .single();
 
-    if (fetchError || !payment) {
+    if (paymentError || !payment) {
       return res.status(404).json({
         success: false,
         error: 'Payment not found'
       });
     }
 
-    if (!payment.razorpay_payment_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'No Razorpay payment ID found'
-      });
-    }
-
     // Create refund
-    const refundAmount = amount ? Math.round(amount * 100) : undefined;
-    const refund = await razorpay.payments.refund(payment.razorpay_payment_id, {
-      amount: refundAmount,
+    const refundOptions = {
+      payment_id: payment_id,
+      amount: amount ? amount * 100 : undefined, // Partial or full refund
       notes: {
-        reason: reason || 'Campaign cancellation',
-        payment_id: paymentId,
+        reason: reason || 'Refund requested',
+        campaign_id: campaignId
       }
-    });
+    };
+
+    const refund = await razorpay.payments.refund(payment_id, refundOptions);
 
     // Update payment record
     await supabase
-      .from('campaign_payments')
+      .from('payments')
       .update({
-        payment_status: 'refunded',
-        refund_id: refund.id,
-        refund_amount: refund.amount / 100,
-        refund_reason: reason,
-        refunded_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        status: 'refunded',
+        refund_details: refund,
+        refunded_at: new Date().toISOString()
       })
-      .eq('id', paymentId);
+      .eq('id', payment.id);
 
     // Log activity
     await supabase
       .from('campaign_activities')
-      .insert({
-        campaign_id: payment.campaign_id,
+      .insert([{
+        campaign_id: campaignId,
+        user_id: 'admin',
+        user_type: 'admin',
         activity_type: 'payment_refunded',
         description: `Refund of ₹${refund.amount / 100} initiated`,
         metadata: {
           refund_id: refund.id,
+          payment_id: payment_id,
           amount: refund.amount / 100,
-          reason: reason,
-        },
-        created_at: new Date().toISOString(),
-      });
+          reason: reason
+        }
+      }]);
 
     res.json({
       success: true,
       message: 'Refund initiated successfully',
       refund: {
         id: refund.id,
+        payment_id: payment_id,
         amount: refund.amount / 100,
-        status: refund.status,
+        status: refund.status
       }
     });
 
@@ -435,7 +408,8 @@ router.post('/api/payments/refund', async (req, res) => {
     console.error('Error processing refund:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Refund failed'
+      error: 'Failed to process refund',
+      details: error.message
     });
   }
 });
