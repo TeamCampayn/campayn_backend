@@ -77,10 +77,16 @@ router.post('/api/campaigns/:campaignId/create-payment-order', async (req, res) 
       return res.status(500).json({ success: false, error: 'Failed to initialize payment gateway', error_type: 'init_error' });
     }
 
+    // Build a compact receipt <= 40 chars (Razorpay limit)
+    const shortCampaign = String(campaignId).replace(/-/g, '').slice(0, 12); // 12 chars of UUID
+    const timeFrag = Date.now().toString().slice(-6); // last 6 digits of timestamp
+    const rawReceipt = receipt || `cmp_${shortCampaign}_${timeFrag}`; // length ~ 4+12+1+6 = 23
+    const safeReceipt = rawReceipt.slice(0, 40); // enforce max length safety
+
     const options = {
       amount: Math.round(amount * 100),
       currency,
-      receipt: receipt || `campaign_${campaignId}_${Date.now()}`,
+      receipt: safeReceipt,
       notes: {
         campaign_id: campaignId,
         campaign_name: campaign.campaign_name,
