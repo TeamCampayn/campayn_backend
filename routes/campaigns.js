@@ -58,6 +58,110 @@ router.get('/api/campaigns', async (req, res) => {
   }
 });
 
+// Get brand dashboard stats
+router.get('/api/dashboard/stats/:brandId', async (req, res) => {
+  try {
+    const { brandId } = req.params;
+
+    // Fetch all campaigns for this brand
+    const { data: campaigns, error: campaignsError } = await supabase
+      .from('campaigns')
+      .select('id, campaign_name, status, phase, created_at, budget')
+      .eq('brand_id', brandId)
+      .order('created_at', { ascending: false });
+
+    if (campaignsError) throw campaignsError;
+
+    const campaignList = campaigns || [];
+    const campaignIds = campaignList.map(c => c.id);
+
+    let activeCreators = 0;
+    let totalSpend = 0;
+    let totalReach = 0;
+
+    // Calculate total spend from active/completed campaigns
+    const activeCampaigns = campaignList.filter(c => 
+      c.phase === 'campaign_active' || 
+      c.phase === 'content_creation' || 
+      c.phase === 'completed' ||
+      c.phase === 'campaign_complete' ||
+      c.status === 'completed'
+    );
+    totalSpend = activeCampaigns.reduce((sum, c) => sum + (c.budget || 0), 0);
+
+    if (campaignIds.length > 0) {
+      // Get creator count
+      const { count: creatorsCount } = await supabase
+        .from('campaign_creators')
+        .select('*', { count: 'exact', head: true })
+        .in('campaign_id', campaignIds);
+      
+      activeCreators = creatorsCount || 0;
+
+      // Get all creator IDs for reach calculation
+      const { data: campaignCreators } = await supabase
+        .from('campaign_creators')
+        .select('creator_id')
+        .in('campaign_id', campaignIds);
+
+      if (campaignCreators && campaignCreators.length > 0) {
+        const creatorIds = [...new Set(campaignCreators.map(cc => cc.creator_id))];
+        
+        // Fetch creator follower counts (using service role - bypasses RLS)
+        const { data: creators } = await supabase
+          .from('creators')
+          .select('id, followers_count, ig_followers')
+          .in('id', creatorIds);
+
+        if (creators && creators.length > 0) {
+          totalReach = creators.reduce((sum, c) => {
+            const followers = c.followers_count || c.ig_followers || 0;
+            return sum + Math.round(followers * 0.15); // 15% estimated reach
+          }, 0);
+        }
+      }
+    }
+
+    // Calculate stats
+    const stats = {
+      totalCampaigns: campaignList.length,
+      draftCampaigns: campaignList.filter(c => c.status === 'draft' || c.phase === 'quotation_pending').length,
+      quotingCampaigns: campaignList.filter(c => 
+        c.phase === 'quotation_sent' || 
+        c.phase === 'quotation_accepted' || 
+        c.phase === 'creator_selection' ||
+        c.phase === 'payment_pending'
+      ).length,
+      liveCampaigns: campaignList.filter(c => 
+        c.phase === 'campaign_active' || 
+        c.phase === 'content_creation' ||
+        c.phase === 'content_approval'
+      ).length,
+      completedCampaigns: campaignList.filter(c => 
+        c.phase === 'completed' || 
+        c.phase === 'campaign_complete' ||
+        c.status === 'completed'
+      ).length,
+      activeCreators,
+      totalSpend,
+      totalReach
+    };
+
+    res.json({
+      success: true,
+      stats,
+      recentCampaigns: campaignList.slice(0, 5)
+    });
+
+  } catch (error) {
+    console.error('Error fetching dashboard stats:', error);
+    res.status(500).json({
+      error: 'Failed to fetch dashboard stats',
+      details: error.message
+    });
+  }
+});
+
 // Create new campaign
 router.post('/api/campaigns', async (req, res) => {
   try {
