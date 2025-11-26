@@ -46,6 +46,8 @@ const campaignsRouter = require('../routes/campaigns');
 const razorpayLinkRouter = require('../routes/razorpay-link');
 // Add Razorpay payments gateway routes (orders, verification, status, refunds, webhooks)
 const paymentsRouter = require('../routes/payments');
+// Add creator recommendations routes (categories, subcategories, recommendations)
+const recommendationsRouter = require('../routes/recommendations');
 
 // Register routes
 app.use('/api', insightsRouter);
@@ -53,6 +55,7 @@ app.use('/api', creatorsRouter);
 app.use(campaignsRouter);
 app.use(razorpayLinkRouter);
 app.use(paymentsRouter);
+app.use(recommendationsRouter);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

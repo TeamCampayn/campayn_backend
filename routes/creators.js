@@ -21,8 +21,6 @@ router.get('/creators', async (req, res) => {
     const start = (parseInt(page) - 1) * parseInt(limit);
     const end = start + parseInt(limit) - 1;
 
-    console.log('Fetching creators with params:', { page, limit, search, category, start, end });
-
     let query = supabase
       .from('creators')
       .select('*', { count: 'exact' })
@@ -44,14 +42,11 @@ router.get('/creators', async (req, res) => {
     const { data, error, count } = await query;
 
     if (error) {
-      console.error('Supabase error:', error);
       return res.status(500).json({ 
         error: 'Database query failed', 
         details: error.message 
       });
     }
-
-    console.log(`Found ${count} total creators, returning ${data?.length || 0} for page ${page}`);
 
     res.json({
       creators: data || [],
@@ -62,7 +57,6 @@ router.get('/creators', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('Error fetching creators:', err);
     res.status(500).json({ 
       error: 'Internal server error', 
       details: err.message 
@@ -73,32 +67,46 @@ router.get('/creators', async (req, res) => {
 // Get unique categories for filtering
 router.get('/creators/categories', async (req, res) => {
   try {
-    console.log('Fetching creator categories...');
-
     const { data, error } = await supabase
-      .from('creators')
-      .select('subcategory')
-      .not('subcategory', 'is', null);
-
+      .from('creator_categories_summary')
+      .select('*')
+      .order('creator_count', { ascending: false });
+    
     if (error) {
-      console.error('Supabase error fetching categories:', error);
       return res.status(500).json({ 
         error: 'Failed to fetch categories', 
         details: error.message 
       });
     }
 
-    const uniqueCategories = [...new Set(data.map(item => item.subcategory))]
-      .filter(category => category && category.trim())
-      .sort();
+    // Transform to frontend-friendly format
+    const categories = data.map(cat => ({
+      category: cat.category,
+      name: cat.category,
+      creator_count: cat.creator_count,
+      count: cat.creator_count,
+      subcategories: cat.subcategories || [],
+      follower_range: {
+        min: cat.min_followers,
+        max: cat.max_followers,
+        avg: cat.avg_followers
+      },
+      by_tier: {
+        micro: cat.micro_count || 0,
+        macro: cat.macro_count || 0,
+        mega: cat.mega_count || 0
+      }
+    }));
 
-    console.log(`Found ${uniqueCategories.length} unique categories`);
-
-    res.json({ categories: uniqueCategories });
+    res.json({ 
+      success: true,
+      categories,
+      total: categories.length 
+    });
 
   } catch (err) {
-    console.error('Error fetching categories:', err);
     res.status(500).json({ 
+      success: false,
       error: 'Internal server error', 
       details: err.message 
     });
@@ -108,8 +116,6 @@ router.get('/creators/categories', async (req, res) => {
 // Test database connection and table structure
 router.get('/creators/test', async (req, res) => {
   try {
-    console.log('Testing creators table...');
-
     // Test basic connection
     const { data: testData, error: testError } = await supabase
       .from('creators')
@@ -117,7 +123,6 @@ router.get('/creators/test', async (req, res) => {
       .limit(1);
 
     if (testError) {
-      console.error('Table access error:', testError);
       return res.status(500).json({ 
         error: 'Cannot access creators table', 
         details: testError.message,
@@ -131,10 +136,6 @@ router.get('/creators/test', async (req, res) => {
       .select('*')
       .limit(3);
 
-    if (sampleError) {
-      console.error('Sample data error:', sampleError);
-    }
-
     const totalCount = testData?.[0]?.count || 0;
 
     res.json({
@@ -146,7 +147,6 @@ router.get('/creators/test', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('Error testing creators table:', err);
     res.status(500).json({ 
       error: 'Database connection failed', 
       details: err.message 
@@ -159,8 +159,6 @@ router.get('/creators/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    console.log('Fetching creator with ID:', id);
-
     const { data: creator, error } = await supabase
       .from('creators')
       .select('*')
@@ -168,7 +166,6 @@ router.get('/creators/:id', async (req, res) => {
       .single();
 
     if (error) {
-      console.error('Supabase error:', error);
       return res.status(500).json({ 
         error: 'Database query failed', 
         details: error.message 
@@ -182,15 +179,12 @@ router.get('/creators/:id', async (req, res) => {
       });
     }
 
-    console.log('Found creator:', creator.name, creator.ig_handle);
-
     res.json({
       success: true,
       creator
     });
 
   } catch (err) {
-    console.error('Error fetching creator by ID:', err);
     res.status(500).json({ 
       error: 'Internal server error', 
       details: err.message 

@@ -61,12 +61,10 @@ const userSockets = new Map();
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
 
   // Join brand-specific room for campaign notifications
   socket.on('join_brand_room', (brandId) => {
     socket.join(`brand_${brandId}`);
-    console.log(`Brand ${brandId} joined their notification room`);
   });
 
   // Join a quotation room
@@ -175,7 +173,6 @@ io.on('connection', (socket) => {
       });
     }
 
-    console.log(`User ${userName} (${userType}) joined room ${campaignId}`);
   });
 
   // Send message in room
@@ -186,16 +183,6 @@ io.on('connection', (socket) => {
       socket.emit('error', { message: 'Campaign ID, message, and user ID are required' });
       return;
     }
-
-    console.log('Sending message:', {
-      campaignId,
-      userId,
-      userType,
-      userName,
-      userEmail,
-      isAdmin,
-      message: message.trim()
-    });
 
     try {
       // Save message to Supabase
@@ -247,10 +234,7 @@ io.on('connection', (socket) => {
       // Broadcast to all users in the room
       io.to(campaignId).emit('new_message', messageData);
 
-      console.log(`Message saved and sent in room ${campaignId} by ${userName} (${userEmail}): ${message}`);
-
     } catch (error) {
-      console.error('Error saving message:', error);
       socket.emit('error', { message: 'Failed to send message' });
     }
   });
@@ -298,14 +282,15 @@ io.on('connection', (socket) => {
 
       // Remove from user sockets
       userSockets.delete(socket.id);
-      
-      console.log(`User ${userName} disconnected from room ${campaignId}`);
     }
   });
 
   // Error handling
   socket.on('error', (error) => {
-    console.error('Socket error:', error);
+    // Log errors only in development
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('Socket error:', error);
+    }
   });
 });
 
@@ -328,6 +313,18 @@ app.use(razorpayLinkRouter);
 // Razorpay Payment Gateway Routes
 const paymentsRouter = require('./routes/payments');
 app.use(paymentsRouter);
+
+// Creator Recommendations Routes
+const recommendationsRouter = require('./routes/recommendations');
+app.use(recommendationsRouter);
+
+// Creator Enrichment Routes (Graph API data fetching)
+const creatorEnrichmentRouter = require('./routes/creatorEnrichment');
+app.use(creatorEnrichmentRouter);
+
+// Creator Selection and Payment Routes
+const creatorSelectionRouter = require('./routes/creatorSelection');
+app.use(creatorSelectionRouter);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -372,15 +369,14 @@ app.get('/rooms', (req, res) => {
 const PORT = process.env.PORT || 4000;
 
 server.listen(PORT, () => {
-  console.log(`🚀 Campayn Backend Server running on port ${PORT}`);
-  console.log(`📡 Socket.IO server ready for connections`);
-  console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL || "http://localhost:8080"}`);
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`🚀 Campayn Backend Server running on port ${PORT}`);
+  }
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
   server.close(() => {
-    console.log('Process terminated');
+    process.exit(0);
   });
 });

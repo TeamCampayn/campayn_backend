@@ -150,17 +150,21 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
+DROP TRIGGER IF EXISTS update_campaigns_updated_at ON campaigns;
 CREATE TRIGGER update_campaigns_updated_at BEFORE UPDATE ON campaigns 
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_campaign_creators_updated_at ON campaign_creators;
 CREATE TRIGGER update_campaign_creators_updated_at BEFORE UPDATE ON campaign_creators 
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_campaign_contents_updated_at ON campaign_contents;
 CREATE TRIGGER update_campaign_contents_updated_at BEFORE UPDATE ON campaign_contents 
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Create views for easier querying (FIXED - using actual brands table columns)
-CREATE OR REPLACE VIEW campaign_overview AS
+DROP VIEW IF EXISTS campaign_overview;
+CREATE VIEW campaign_overview AS
 SELECT 
   c.*,
   b.brand_name,
@@ -173,13 +177,39 @@ SELECT
   COUNT(cnt.id) as total_contents,
   COUNT(cnt.id) FILTER (WHERE cnt.approval_status = 'approved') as approved_contents,
   COUNT(cnt.id) FILTER (WHERE cnt.approval_status = 'pending') as pending_contents,
-  SUM(cp.amount) FILTER (WHERE cp.payment_status = 'completed' AND cp.payment_type = 'campaign_fee') as total_paid
+  SUM(cp.amount) FILTER (WHERE cp.payment_status = 'completed' AND cp.payment_type = 'campaign_fee') as total_paid,
+  perf.total_reach,
+  perf.total_impressions,
+  perf.total_engagement,
+  perf.total_clicks,
+  perf.avg_engagement_rate
 FROM campaigns c
 LEFT JOIN brands b ON c.brand_id = b.id
 LEFT JOIN campaign_creators cc ON c.id = cc.campaign_id
 LEFT JOIN campaign_contents cnt ON c.id = cnt.campaign_id
 LEFT JOIN campaign_payments cp ON c.id = cp.campaign_id
-GROUP BY c.id, b.brand_name, b.brand_website, b.industry;
+LEFT JOIN (
+  SELECT 
+    campaign_id,
+    SUM(metric_value) FILTER (WHERE metric_type = 'reach') AS total_reach,
+    SUM(metric_value) FILTER (WHERE metric_type = 'impressions') AS total_impressions,
+    SUM(metric_value) FILTER (WHERE metric_type = 'engagement') AS total_engagement,
+    SUM(metric_value) FILTER (WHERE metric_type = 'clicks') AS total_clicks,
+    CASE 
+      WHEN SUM(metric_value) FILTER (WHERE metric_type = 'impressions') > 0 THEN
+        (SUM(metric_value) FILTER (WHERE metric_type = 'engagement') / 
+         SUM(metric_value) FILTER (WHERE metric_type = 'impressions')) * 100
+      ELSE NULL
+    END AS avg_engagement_rate
+  FROM campaign_performance
+  GROUP BY campaign_id
+) perf ON c.id = perf.campaign_id
+GROUP BY c.id, b.brand_name, b.brand_website, b.industry,
+         perf.total_reach,
+         perf.total_impressions,
+         perf.total_engagement,
+         perf.total_clicks,
+         perf.avg_engagement_rate;
 
 -- Insert sample campaign phases for testing (only if brands exist)
 DO $$

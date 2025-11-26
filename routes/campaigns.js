@@ -319,6 +319,31 @@ router.patch('/api/campaigns/:campaignId/creators/:creatorId/respond', async (re
       return res.status(400).json({ error: 'Invalid status' });
     }
 
+    // If approving, validate against budget limits
+    if (status === 'approved') {
+      const { data: validationResult, error: validationError } = await supabase
+        .rpc('validate_creator_selection', {
+          p_campaign_id: campaignId,
+          p_creator_id: creatorId
+        });
+
+      if (validationError) {
+        console.error('Validation error:', validationError);
+        // Continue without validation if function doesn't exist yet
+      } else if (validationResult && validationResult.length > 0) {
+        const validation = validationResult[0];
+        if (!validation.is_valid) {
+          return res.status(400).json({
+            success: false,
+            error: validation.message || 'Selection limit reached',
+            currentSelected: validation.current_selected,
+            maxAllowed: validation.max_allowed,
+            validationFailed: true
+          });
+        }
+      }
+    }
+
     // Update creator status
     const { data: updatedCreator, error } = await supabase
       .from('campaign_creators')

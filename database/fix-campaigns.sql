@@ -41,13 +41,39 @@ SELECT
   COUNT(cnt.id) as total_contents,
   COUNT(cnt.id) FILTER (WHERE cnt.approval_status = 'approved') as approved_contents,
   COUNT(cnt.id) FILTER (WHERE cnt.approval_status = 'pending') as pending_contents,
-  SUM(cp.amount) FILTER (WHERE cp.payment_status = 'completed' AND cp.payment_type = 'campaign_fee') as total_paid
+  SUM(cp.amount) FILTER (WHERE cp.payment_status = 'completed' AND cp.payment_type = 'campaign_fee') as total_paid,
+  perf.total_reach,
+  perf.total_impressions,
+  perf.total_engagement,
+  perf.total_clicks,
+  perf.avg_engagement_rate
 FROM campaigns c
 LEFT JOIN brands b ON c.brand_id = b.id
 LEFT JOIN campaign_creators cc ON c.id = cc.campaign_id
 LEFT JOIN campaign_contents cnt ON c.id = cnt.campaign_id
 LEFT JOIN campaign_payments cp ON c.id = cp.campaign_id
-GROUP BY c.id, b.brand_name, b.brand_website, b.industry;
+LEFT JOIN (
+  SELECT 
+    campaign_id,
+    SUM(metric_value) FILTER (WHERE metric_type = 'reach') AS total_reach,
+    SUM(metric_value) FILTER (WHERE metric_type = 'impressions') AS total_impressions,
+    SUM(metric_value) FILTER (WHERE metric_type = 'engagement') AS total_engagement,
+    SUM(metric_value) FILTER (WHERE metric_type = 'clicks') AS total_clicks,
+    CASE 
+      WHEN SUM(metric_value) FILTER (WHERE metric_type = 'impressions') > 0 THEN
+        (SUM(metric_value) FILTER (WHERE metric_type = 'engagement') / 
+         SUM(metric_value) FILTER (WHERE metric_type = 'impressions')) * 100
+      ELSE NULL
+    END AS avg_engagement_rate
+  FROM campaign_performance
+  GROUP BY campaign_id
+) perf ON c.id = perf.campaign_id
+GROUP BY c.id, b.brand_name, b.brand_website, b.industry,
+         perf.total_reach,
+         perf.total_impressions,
+         perf.total_engagement,
+         perf.total_clicks,
+         perf.avg_engagement_rate;
 
 -- Insert sample campaigns safely
 DO $$

@@ -330,8 +330,6 @@ router.post('/api/webhooks/razorpay', async (req, res) => {
     const event = req.body.event;
     const payload = req.body.payload.payment.entity;
 
-    console.log('Razorpay webhook received:', event);
-
     // Handle different events
     switch (event) {
       case 'payment.captured':
@@ -380,7 +378,8 @@ router.post('/api/webhooks/razorpay', async (req, res) => {
         break;
 
       default:
-        console.log('Unhandled webhook event:', event);
+        // Unhandled webhook event - no action needed
+        break;
     }
 
     res.json({ success: true, message: 'Webhook processed' });

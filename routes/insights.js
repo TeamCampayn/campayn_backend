@@ -170,17 +170,8 @@ router.get('/insights', async (req, res) => {
     const ACCESS_TOKEN = process.env.IG_ACCESS_TOKEN;
     const OUR_IG_ID = process.env.IG_BUSINESS_ID;
 
-    console.log('📊 Instagram Insights Request:', {
-        username,
-        hasAccessToken: !!ACCESS_TOKEN,
-        hasBusinessId: !!OUR_IG_ID,
-        accessTokenLength: ACCESS_TOKEN?.length,
-        businessId: OUR_IG_ID
-    });
-
     // Validate environment variables
     if (!ACCESS_TOKEN || !OUR_IG_ID) {
-        console.error('❌ Missing Instagram API credentials');
         return res.status(500).json({ 
             error: 'Instagram API is not configured',
             details: 'Missing IG_ACCESS_TOKEN or IG_BUSINESS_ID environment variables',
@@ -225,12 +216,9 @@ router.get('/insights', async (req, res) => {
 
         const url = `https://graph.facebook.com/v19.0/${OUR_IG_ID}?fields=${fields}&access_token=${ACCESS_TOKEN}`;
         
-        console.log('Making request to Instagram API for:', cleanUsername);
-        
         const response = await axios.get(url);
         
         if (!response.data || !response.data.business_discovery) {
-            console.error('Invalid API response structure:', response.data);
             throw new Error('Invalid response from Instagram API');
         }
 
@@ -461,10 +449,8 @@ router.get('/post-insights', async (req, res) => {
 
             const fields = encodeURIComponent(`business_discovery.username(${cleanUsername}){username,id,name,profile_picture_url,followers_count,${mediaField}}`);
             const url = `https://graph.facebook.com/v19.0/${OUR_IG_ID}?fields=${fields}&access_token=${ACCESS_TOKEN}`;
-            console.log('BD page', page + 1, 'for', cleanUsername);
             const response = await axios.get(url);
             if (!response.data || !response.data.business_discovery) {
-                console.error('Invalid API response structure:', response.data);
                 throw new Error('Invalid response from Instagram API');
             }
             profile = response.data.business_discovery;
@@ -544,15 +530,12 @@ router.get('/post-insights', async (req, res) => {
         }
 
         if (!matchedPost) {
-            console.log('Available permalinks sample (first 10):', allMedia.slice(0, 10).map(p => p.permalink));
             return res.status(404).json({ 
                 error: 'Post not found',
                 message: `Could not find post with URL ${postUrl} in @${cleanUsername}'s recent media (up to 100 posts accessible via Business Discovery). The post might be too old, private, or the URL may be incorrect.`,
                 availablePostsCount: allMedia.length
             });
         }
-
-        console.log('Found matching post:', matchedPost.id, 'with', matchedPost.like_count, 'likes');
 
         // Return the specific post data along with creator profile info
         res.json({
