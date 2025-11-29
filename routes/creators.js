@@ -15,7 +15,8 @@ router.get('/creators', async (req, res) => {
       page = 1, 
       limit = 20, 
       search = '', 
-      category = 'all' 
+      category = 'all',
+      subcategory = 'all'
     } = req.query;
 
     const start = (parseInt(page) - 1) * parseInt(limit);
@@ -31,9 +32,14 @@ router.get('/creators', async (req, res) => {
       query = query.or(`name.ilike.%${search.trim()}%,ig_handle.ilike.%${search.trim()}%`);
     }
 
-    // Apply category filter
+    // Apply category filter - filter by category field (main category)
     if (category && category !== 'all') {
-      query = query.eq('subcategory', category);
+      query = query.eq('category', category);
+    }
+
+    // Apply subcategory filter
+    if (subcategory && subcategory !== 'all') {
+      query = query.eq('subcategory', subcategory);
     }
 
     // Order by name for consistent results
