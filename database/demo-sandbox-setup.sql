@@ -72,6 +72,8 @@ DELETE FROM brands WHERE user_id IN (
 
 -- Note: We don't delete the auth.users entry as it should be managed by Supabase Auth
 
+SELECT '✅ Cleaned existing demo data' as status;
+
 -- ============================================================
 -- STEP 2: PAYMENT SANDBOX CONFIGURATION
 -- ============================================================
@@ -107,6 +109,8 @@ VALUES (
 ON CONFLICT (config_key) DO UPDATE SET
   config_value = EXCLUDED.config_value,
   updated_at = NOW();
+
+SELECT '✅ Payment sandbox mode enabled' as status;
 
 -- ============================================================
 -- STEP 3: CREATE DEMO BRAND CONTEXT
