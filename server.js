@@ -23,8 +23,8 @@ const allowedOrigins = [
   "https://zestful-campaign-craft-69.netlify.app",
   "https://campayn.in",
   "https://www.campayn.in",
-  "https://campayn-frontend.netlify.app"
-  "https://campayn-zeta.vercel.app/"
+  "https://campayn-frontend.netlify.app",
+  "https://campayn-zeta.vercel.app"
 ].filter(Boolean);
 
 const io = socketIo(server, {
@@ -41,7 +41,7 @@ app.use(cors({
     // Allow requests with no origin (mobile apps, curl, etc)
     if (!origin) return callback(null, true);
 
-    if (allowedOrigins.includes(origin) || origin.includes('netlify.app')) {
+    if (allowedOrigins.includes(origin) || origin.includes('netlify.app') || origin.includes('vercel.app')) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
