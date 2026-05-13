@@ -24,7 +24,7 @@ const allowedOrigins = [
   "https://campayn.in",
   "https://www.campayn.in",
   "https://campayn-frontend.netlify.app",
-  "https://campayn-zeta.vercel.app"
+  "https://campayn-zeta.vercel.app",
 ].filter(Boolean);
 
 const io = socketIo(server, {
