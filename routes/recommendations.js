@@ -54,6 +54,55 @@ router.get('/api/creators/categories', async (req, res) => {
 });
 
 /**
+ * Get all creators with filtering and pagination
+ * Used for the Explore Creators page
+ */
+router.get('/api/creators', async (req, res) => {
+  try {
+    const { page = 1, limit = 20, search = '', category = 'all', subcategory = 'all' } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    
+    let query = supabase
+      .from('creators')
+      .select('*', { count: 'exact' });
+      
+    if (category !== 'all') {
+      query = query.eq('category', category);
+    }
+    
+    if (subcategory !== 'all') {
+      query = query.eq('subcategory', subcategory);
+    }
+    
+    if (search) {
+      query = query.or(`name.ilike.%${search}%,ig_handle.ilike.%${search}%`);
+    }
+    
+    const { data, count, error } = await query
+      .order('ig_followers', { ascending: false })
+      .range(offset, offset + parseInt(limit) - 1);
+      
+    if (error) throw error;
+    
+    res.json({
+      success: true,
+      creators: data,
+      totalCount: count,
+      page: parseInt(page),
+      totalPages: Math.ceil(count / parseInt(limit))
+    });
+    
+  } catch (error) {
+    console.error('Error fetching creators:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch creators',
+      details: error.message
+    });
+  }
+});
+
+/**
  * Get subcategories for a specific category
  */
 router.get('/api/creators/categories/:category/subcategories', async (req, res) => {

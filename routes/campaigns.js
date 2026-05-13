@@ -175,7 +175,12 @@ router.post('/api/campaigns', async (req, res) => {
       campaign_objectives,
       requirements,
       deliverables,
-      admin_notes
+      admin_notes,
+      creator_category,
+      creator_tier,
+      target_category,
+      target_subcategory,
+      creator_type
     } = req.body;
 
     const { data: campaign, error } = await supabase
@@ -191,12 +196,58 @@ router.post('/api/campaigns', async (req, res) => {
         requirements,
         deliverables,
         admin_notes,
-        phase: 'creator_selection'
+        phase: 'creator_selection',
+        creator_category,
+        creator_tier,
+        target_category,
+        target_subcategory,
+        creator_type
       })
       .select()
       .single();
 
     if (error) throw error;
+
+    // AI Auto-Selection of Creators
+    try {
+      const category = creator_category || target_category;
+      const type = creator_tier || creator_type;
+      
+      if (category) {
+        const { data: recommendations, error: recError } = await supabase
+          .rpc('recommend_creators', {
+            p_category: category,
+            p_subcategory: target_subcategory,
+            p_creator_type: type,
+            p_limit: 15,
+            p_min_engagement: 0.5
+          });
+
+        if (recError) throw recError;
+
+        if (recommendations && recommendations.length > 0) {
+          const creatorAssignments = recommendations.map(creator => ({
+            campaign_id: campaign.id,
+            creator_id: creator.id,
+            status: 'recommended',
+            recommended_by_admin: true,
+            admin_notes: `AI Auto-recommended: ${creator.match_score}% match`
+          }));
+
+          await supabase
+            .from('campaign_creators')
+            .upsert(creatorAssignments, {
+              onConflict: 'campaign_id,creator_id',
+              ignoreDuplicates: false
+            });
+            
+          console.log(`Auto-recommended ${recommendations.length} creators for campaign ${campaign.id}`);
+        }
+      }
+    } catch (recErr) {
+      console.error('Error auto-recommending creators:', recErr);
+      // Don't fail the whole request if recommendations fail
+    }
 
     // Log activity
     await logActivity(
@@ -274,7 +325,7 @@ router.get('/api/campaigns/:campaignId', async (req, res) => {
 
     // Get campaign details
     const { data: campaign, error: campaignError } = await supabase
-      .from('campaign_overview')
+      .from('campaigns')
       .select('*')
       .eq('id', campaignId)
       .single();
@@ -288,7 +339,7 @@ router.get('/api/campaigns/:campaignId', async (req, res) => {
         *,
         creators (
           id, name, ig_handle, category, subcategory,
-          followers_count, engagement_rate, profile_picture_url
+          followers_count, engagement_rate
         )
       `)
       .eq('campaign_id', campaignId)
@@ -302,7 +353,7 @@ router.get('/api/campaigns/:campaignId', async (req, res) => {
       .select(`
         *,
         creators (
-          id, name, ig_handle, profile_picture_url
+          id, name, ig_handle
         )
       `)
       .eq('campaign_id', campaignId)
@@ -461,7 +512,7 @@ router.patch('/api/campaigns/:campaignId/creators/:creatorId/respond', async (re
       .select(`
         *,
         creators (
-          id, name, ig_handle, profile_picture_url
+          id, name, ig_handle
         )
       `)
       .single();
@@ -607,7 +658,7 @@ router.post('/api/campaigns/:campaignId/creators/:creatorId/admin-reply', async 
       .select(`
         *,
         creators (
-          id, name, ig_handle, profile_picture_url
+          id, name, ig_handle
         )
       `)
       .single();
@@ -698,7 +749,7 @@ router.post('/api/campaigns/:campaignId/creators/:creatorId/brand-reply', async 
       .select(`
         *,
         creators (
-          id, name, ig_handle, profile_picture_url
+          id, name, ig_handle
         )
       `)
       .single();
@@ -927,7 +978,7 @@ router.post('/api/campaigns/:campaignId/contents', async (req, res) => {
       .select(`
         *,
         creators (
-          id, name, ig_handle, profile_picture_url
+          id, name, ig_handle
         )
       `)
       .single();
@@ -999,7 +1050,7 @@ router.patch('/api/campaigns/:campaignId/contents/:contentId/approve', async (re
       .select(`
         *,
         creators (
-          id, name, ig_handle, profile_picture_url
+          id, name, ig_handle
         )
       `)
       .single();
@@ -1015,7 +1066,7 @@ router.patch('/api/campaigns/:campaignId/contents/:contentId/approve', async (re
         .select(`
           *,
           creators (
-            id, name, ig_handle, profile_picture_url
+            id, name, ig_handle
           )
         `)
         .single();
@@ -1243,7 +1294,7 @@ router.patch('/api/campaigns/:campaignId/contents/:contentId/post', async (req, 
         performance_metrics: mergedMetrics
       })
       .eq('id', contentId)
-      .select(`*, creators (id, name, ig_handle, profile_picture_url)`).single();
+      .select(`*, creators (id, name, ig_handle)`).single();
     if (error) throw error;
 
     await logActivity(
@@ -1276,7 +1327,7 @@ router.patch('/api/campaigns/:campaignId/contents/:contentId/metrics', async (re
       .from('campaign_contents')
       .update({ performance_metrics })
       .eq('id', contentId)
-      .select(`*, creators (id, name, ig_handle, profile_picture_url)`).single();
+      .select(`*, creators (id, name, ig_handle)`).single();
     if (error) throw error;
 
     await logActivity(

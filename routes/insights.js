@@ -240,6 +240,22 @@ router.get('/insights', async (req, res) => {
         // Compute all metrics
         const metrics = computeAllMetrics(profile, media);
 
+        // Update creators table with real-time data for professional grade startup
+        try {
+            await supabase
+                .from('creators')
+                .update({
+                    ig_followers: profile.followers_count,
+                    avg_likes: Math.round(metrics.avgLikes),
+                    avg_comments: Math.round(metrics.avgComments),
+                    avg_views: Math.round(metrics.avgViews),
+                    profile_picture_url: profile.profile_picture_url
+                })
+                .eq('ig_handle', cleanUsername);
+        } catch (dbError) {
+            console.error('Error updating creator in database:', dbError);
+        }
+
         // --- Compute follower % change over 7/30 days with fallbacks ---
         let percentChange7d = null, percentChange30d = null;
         
@@ -379,7 +395,55 @@ router.get('/insights', async (req, res) => {
             statusText: err.response?.statusText
         });
         
-        // Provide detailed error information for debugging
+        // Fallback to database data if IG API fails
+        try {
+            const cleanUsername = req.query.username.replace(/^@/, '');
+            const { data: creator, error: dbError } = await supabase
+                .from('creators')
+                .select('*')
+                .eq('ig_handle', cleanUsername.toLowerCase())
+                .single();
+
+            if (creator) {
+                console.log(`ℹ️ Falling back to database data for ${cleanUsername}`);
+                
+                return res.json({
+                    profile: {
+                        username: creator.ig_handle,
+                        name: creator.name,
+                        profile_picture_url: null, // We don't have this in CSV
+                        biography: creator.bio || '',
+                        followers_count: creator.ig_followers,
+                        following_count: 0,
+                        media_count: 0,
+                        category: creator.category
+                    },
+                    metrics: {
+                        engagementRate: parseFloat(creator.engagement_rate) || 0,
+                        avgLikes: creator.avg_likes || 0,
+                        avgComments: creator.avg_comments || 0,
+                        avgViews: creator.avg_views || 0,
+                        hashtagStats: [],
+                        captionStats: { avgLength: 0, percentLongCaptions100: 0 },
+                        bestPostingWindow: 'Data tracked over time',
+                        growth: {
+                            trend: 'stable',
+                            growthRate: 0,
+                            velocity: 0,
+                            nextMilestones: [],
+                            percentChange7d: 0,
+                            percentChange30d: 0
+                        },
+                        followerHistory: []
+                    },
+                    recentMedia: []
+                });
+            }
+        } catch (fallbackErr) {
+            console.error('❌ Fallback Error:', fallbackErr.message);
+        }
+
+        // Provide detailed error information for debugging if fallback also fails or creator not found
         const errorDetails = err.response?.data?.error || {};
         const errorMessage = errorDetails.message || err.message;
         const errorCode = errorDetails.code || err.response?.status;
