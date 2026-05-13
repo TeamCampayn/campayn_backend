@@ -16,13 +16,15 @@ const server = http.createServer(app);
 
 // CORS configuration for frontend connection
 const allowedOrigins = [
-  process.env.FRONTEND_URL || "http://localhost:8080",
+  process.env.FRONTEND_URL,
   "http://localhost:5173",
   "http://localhost:8080",
   "http://localhost:3000",
   "https://zestful-campaign-craft-69.netlify.app",
   "https://campayn.in",
-  "https://www.campayn.in"
+  "https://www.campayn.in",
+  "https://campayn-frontend.netlify.app"
+  "https://campayn-zeta.vercel.app/"
 ].filter(Boolean);
 
 const io = socketIo(server, {
@@ -38,7 +40,7 @@ app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, curl, etc)
     if (!origin) return callback(null, true);
-    
+
     if (allowedOrigins.includes(origin) || origin.includes('netlify.app')) {
       callback(null, true);
     } else {
@@ -70,7 +72,7 @@ io.on('connection', (socket) => {
   // Join a quotation room
   socket.on('join_room', async (data) => {
     const { campaignId, userId, userType, userName, userEmail, isAdmin } = data;
-    
+
     if (!campaignId) {
       socket.emit('error', { message: 'Campaign ID is required' });
       return;
@@ -178,7 +180,7 @@ io.on('connection', (socket) => {
   // Send message in room
   socket.on('send_message', async (data) => {
     const { campaignId, message, messageType = 'text', userId, userType, userName, userEmail, isAdmin } = data;
-    
+
     if (!campaignId || !message || !userId) {
       socket.emit('error', { message: 'Campaign ID, message, and user ID are required' });
       return;
@@ -243,7 +245,7 @@ io.on('connection', (socket) => {
   socket.on('typing', (data) => {
     const { campaignId, isTyping } = data;
     const userInfo = userSockets.get(socket.id);
-    
+
     if (userInfo && campaignId) {
       socket.to(campaignId).emit('user_typing', {
         userId: userInfo.userId,
@@ -257,15 +259,15 @@ io.on('connection', (socket) => {
   // Handle disconnection
   socket.on('disconnect', () => {
     const userInfo = userSockets.get(socket.id);
-    
+
     if (userInfo) {
       const { campaignId, userId, userName, userType } = userInfo;
-      
+
       // Remove from room
       if (campaignId && activeRooms.has(campaignId)) {
         const room = activeRooms.get(campaignId);
         room.users.delete(userId);
-        
+
         // Notify others in the room
         socket.to(campaignId).emit('user_left', {
           userId,
@@ -340,7 +342,7 @@ app.get('/health', (req, res) => {
 app.get('/rooms/:campaignId', (req, res) => {
   const { campaignId } = req.params;
   const room = activeRooms.get(campaignId);
-  
+
   if (!room) {
     return res.status(404).json({ error: 'Room not found' });
   }
