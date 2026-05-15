@@ -20,9 +20,9 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:8080",
   "http://localhost:3000",
-  "https://zestful-campaign-craft-69.netlify.app",
   "https://campayn.in",
   "https://www.campayn.in",
+  "https://campayn-kohl.vercel.app",
   "https://campayn-frontend.netlify.app",
   "https://campayn-zeta.vercel.app",
 ].filter(Boolean);
