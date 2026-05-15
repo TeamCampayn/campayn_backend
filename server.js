@@ -300,6 +300,10 @@ io.on('connection', (socket) => {
 const insightsRouter = require('./routes/insights');
 app.use('/api', insightsRouter);
 
+// New Instagram OAuth and Direct Insights
+const instagramRouter = require('./routes/instagram');
+app.use('/api', instagramRouter);
+
 // Admin HQ Routes
 const adminRouter = require('./routes/admin');
 app.use('/api', adminRouter);
