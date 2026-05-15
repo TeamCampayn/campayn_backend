@@ -300,6 +300,10 @@ io.on('connection', (socket) => {
 const insightsRouter = require('./routes/insights');
 app.use('/api', insightsRouter);
 
+// Admin HQ Routes
+const adminRouter = require('./routes/admin');
+app.use('/api', adminRouter);
+
 // Creators Routes
 const creatorsRouter = require('./routes/creators');
 app.use('/api', creatorsRouter);
