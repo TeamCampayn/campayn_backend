@@ -109,8 +109,9 @@ exports.handleAuthCallback = async (req, res) => {
     res.redirect(`${process.env.FRONTEND_URL}/?status=success&handle=${igHandle}`);
 
   } catch (error) {
+    const fbError = error.response?.data?.error?.message || error.message;
     console.error('❌ Instagram Auth Error:', error.response?.data || error.message);
-    res.redirect(`${process.env.FRONTEND_URL}/?status=error&message=${encodeURIComponent(error.message)}`);
+    res.redirect(`${process.env.FRONTEND_URL}/?status=error&message=${encodeURIComponent(fbError)}`);
   }
 };
 
