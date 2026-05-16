@@ -99,18 +99,18 @@ exports.handleAuthCallback = async (req, res) => {
         ig_handle: igHandle,
         account_status: 'verified'
       })
-      .eq('id', creatorId)
+      .eq('user_id', creatorId)
       .select()
       .single();
 
     if (error) throw error;
 
     // 5. Redirect back to frontend
-    res.redirect(`${process.env.FRONTEND_URL}/dashboard/settings?status=success&handle=${igHandle}`);
+    res.redirect(`${process.env.FRONTEND_URL}/?status=success&handle=${igHandle}`);
 
   } catch (error) {
     console.error('❌ Instagram Auth Error:', error.response?.data || error.message);
-    res.redirect(`${process.env.FRONTEND_URL}/dashboard/settings?status=error&message=${encodeURIComponent(error.message)}`);
+    res.redirect(`${process.env.FRONTEND_URL}/?status=error&message=${encodeURIComponent(error.message)}`);
   }
 };
 
