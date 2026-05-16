@@ -14,4 +14,7 @@ router.get('/auth/creator/dashboard/:userId', instagramController.getCreatorDash
 // Public media kit (no auth required)
 router.get('/creator/media-kit/:igHandle', instagramController.getMediaKit);
 
+// Explore creators (Public discovery)
+router.get('/creator/explore', instagramController.getExploreCreators);
+
 module.exports = router;

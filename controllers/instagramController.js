@@ -666,3 +666,59 @@ exports.getMediaKit = async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+/**
+ * Explore Creators (For Brands)
+ * GET /api/auth/creator/explore
+ */
+exports.getExploreCreators = async (req, res) => {
+  const { city, category, minScore, search, limit = 20, offset = 0 } = req.query;
+
+  try {
+    let query = supabase
+      .from('creators')
+      .select('id, name, ig_handle, category, location, ig_followers, followers_count, engagement_rate, profile_picture_url, campayn_score, verified', { count: 'exact' })
+      .not('campayn_score', 'is', null) // Only show creators who have been scored
+      .order('campayn_score', { ascending: false });
+
+    if (city) {
+      query = query.ilike('location', `%${city}%`);
+    }
+
+    if (category) {
+      query = query.eq('category', category);
+    }
+
+    if (minScore) {
+      query = query.gte('campayn_score', parseInt(minScore));
+    }
+
+    if (search) {
+      query = query.or(`name.ilike.%${search}%,ig_handle.ilike.%${search}%`);
+    }
+
+    const { data: creators, error, count } = await query.range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      creators: creators.map(c => ({
+        id: c.id,
+        name: c.name,
+        igHandle: c.ig_handle,
+        category: c.category,
+        location: c.location,
+        followers: c.ig_followers || c.followers_count || 0,
+        engagementRate: parseFloat(c.engagement_rate) || 0,
+        profilePictureUrl: c.profile_picture_url,
+        campaynScore: c.campayn_score,
+        verified: c.verified
+      })),
+      total: count
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
