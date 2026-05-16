@@ -25,6 +25,96 @@ const logActivity = async (campaignId, userId, userType, activityType, descripti
   }
 };
 
+// Invite creator to campaign
+router.post('/api/campaigns/invite', async (req, res) => {
+  const { campaignId, creatorId, brandId } = req.body;
+
+  if (!campaignId || !creatorId || !brandId) {
+    return res.status(400).json({ success: false, error: 'Missing required parameters: campaignId, creatorId, brandId' });
+  }
+
+  try {
+    // 1. Verify campaign belongs to brand
+    const { data: campaign, error: campaignError } = await supabase
+      .from('campaigns')
+      .select('id, campaign_name')
+      .eq('id', campaignId)
+      .eq('brand_id', brandId)
+      .single();
+
+    if (campaignError || !campaign) {
+      return res.status(403).json({ success: false, error: 'Unauthorized: Campaign not found or access denied.' });
+    }
+
+    // 2. Check if creator is already in this campaign
+    const { data: existing, error: existingError } = await supabase
+      .from('campaign_creators')
+      .select('id')
+      .eq('campaign_id', campaignId)
+      .eq('creator_id', creatorId);
+
+    if (existing && existing.length > 0) {
+      return res.status(400).json({ success: false, error: 'Creator is already part of this campaign.' });
+    }
+
+    // 3. Insert invitation
+    const { data: invite, error: inviteError } = await supabase
+      .from('campaign_creators')
+      .insert({
+        campaign_id: campaignId,
+        creator_id: creatorId,
+        status: 'invited',
+        brand_response: 'approved',
+        selection_status: 'pending'
+      })
+      .select()
+      .single();
+
+    if (inviteError) throw inviteError;
+
+    // 4. Log Activity
+    await logActivity(campaignId, brandId, 'brand', 'creator_invited', `Invited creator to ${campaign.campaign_name}`, { creator_id: creatorId });
+
+    res.json({ success: true, invite });
+
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Respond to invitation (Creator)
+router.post('/api/campaigns/invitation-response', async (req, res) => {
+  const { campaignId, creatorId, response } = req.body; // response: 'approved' or 'rejected'
+
+  if (!campaignId || !creatorId || !response) {
+    return res.status(400).json({ success: false, error: 'Missing required parameters' });
+  }
+
+  try {
+    const { data: invite, error: inviteError } = await supabase
+      .from('campaign_creators')
+      .update({
+        status: response === 'approved' ? 'approved' : 'rejected',
+        selection_status: response === 'approved' ? 'selected' : 'rejected',
+        updated_at: new Date().toISOString()
+      })
+      .eq('campaign_id', campaignId)
+      .eq('creator_id', creatorId)
+      .select()
+      .single();
+
+    if (inviteError) throw inviteError;
+
+    // Log activity
+    await logActivity(campaignId, creatorId, 'creator', 'invitation_response', `Creator ${response} the invitation`, { response });
+
+    res.json({ success: true, invite });
+
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Get all campaigns with overview
 router.get('/api/campaigns', async (req, res) => {
   try {
