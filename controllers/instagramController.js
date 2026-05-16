@@ -152,7 +152,9 @@ exports.handleAuthCallback = async (req, res) => {
     // 4. Update Creator in Database
     // We assume the 'state' parameter was used to pass the creator's local ID
     const creatorId = state; 
+    console.log('💾 Updating creator with user_id:', creatorId);
 
+    // First try to update existing creator
     const { data, error } = await supabase
       .from('creators')
       .update({
@@ -163,10 +165,30 @@ exports.handleAuthCallback = async (req, res) => {
         account_status: 'verified'
       })
       .eq('user_id', creatorId)
-      .select()
-      .single();
+      .select();
+
+    console.log('💾 Update result:', JSON.stringify({ data, error }, null, 2));
 
     if (error) throw error;
+
+    // If no rows were updated, the creator doesn't exist yet — create one
+    if (!data || data.length === 0) {
+      console.log('💾 No existing creator found, inserting new row...');
+      const { data: insertData, error: insertError } = await supabase
+        .from('creators')
+        .insert({
+          user_id: creatorId,
+          ig_access_token: longToken,
+          ig_user_id: igBusinessId,
+          ig_token_expires_at: expiresAt.toISOString(),
+          ig_handle: igHandle,
+          account_status: 'verified'
+        })
+        .select();
+
+      if (insertError) throw insertError;
+      console.log('💾 Created new creator:', JSON.stringify(insertData, null, 2));
+    }
 
     // 5. Redirect back to frontend
     res.redirect(`${process.env.FRONTEND_URL}/?status=success&handle=${igHandle}`);
