@@ -528,6 +528,31 @@ exports.getCreatorDashboard = async (req, res) => {
     const campaynScore = calculateCampaynScore(creator, igData, campaignStats);
     const rateCard = calculateRateCard(igData.followersCount, igData.engagementRate);
 
+    // Save score to DB for percentile ranking
+    await supabase.from('creators').update({
+      campayn_score: campaynScore.total
+    }).eq('id', creator.id);
+
+    // Calculate percentiles (Global & City-Level Benchmarking)
+    const { count: totalCreators } = await supabase.from('creators').select('id', { count: 'exact', head: true });
+    const { count: lowerScoreCreators } = await supabase.from('creators').select('id', { count: 'exact', head: true }).lt('campayn_score', campaynScore.total);
+    
+    const percentile = totalCreators > 1 ? Math.round((lowerScoreCreators / (totalCreators - 1)) * 100) : 100;
+    
+    // City specific ranking (India-First: Indore/Bhopal focus)
+    let cityPercentile = null;
+    if (creator.location) {
+      const { count: cityCreators } = await supabase.from('creators').select('id', { count: 'exact', head: true }).eq('location', creator.location);
+      const { count: lowerCityCreators } = await supabase.from('creators').select('id', { count: 'exact', head: true }).eq('location', creator.location).lt('campayn_score', campaynScore.total);
+      cityPercentile = cityCreators > 1 ? Math.round((lowerCityCreators / (cityCreators - 1)) * 100) : 100;
+    }
+
+    campaynScore.percentile = {
+      global: Math.max(1, Math.min(99, percentile)),
+      city: cityPercentile ? Math.max(1, Math.min(99, cityPercentile)) : null,
+      cityLabel: creator.location || 'Central India'
+    };
+
     res.json({
       success: true,
       connected: !!(creator.ig_access_token && creator.ig_user_id),
@@ -589,6 +614,24 @@ exports.getMediaKit = async (req, res) => {
     }, { totalDeliverables: 0, completedDeliverables: 0 });
 
     const rateCard = calculateRateCard(followers, engRate);
+
+    // Calculate percentiles (Global & City-Level Benchmarking)
+    const { count: totalCreators } = await supabase.from('creators').select('id', { count: 'exact', head: true });
+    const { count: lowerScoreCreators } = await supabase.from('creators').select('id', { count: 'exact', head: true }).lt('campayn_score', campaynScore.total);
+    const percentile = totalCreators > 1 ? Math.round((lowerScoreCreators / (totalCreators - 1)) * 100) : 100;
+    
+    let cityPercentile = null;
+    if (creator.location) {
+      const { count: cityCreators } = await supabase.from('creators').select('id', { count: 'exact', head: true }).eq('location', creator.location);
+      const { count: lowerCityCreators } = await supabase.from('creators').select('id', { count: 'exact', head: true }).eq('location', creator.location).lt('campayn_score', campaynScore.total);
+      cityPercentile = cityCreators > 1 ? Math.round((lowerCityCreators / (cityCreators - 1)) * 100) : 100;
+    }
+
+    campaynScore.percentile = {
+      global: Math.max(1, Math.min(99, percentile)),
+      city: cityPercentile ? Math.max(1, Math.min(99, cityPercentile)) : null,
+      cityLabel: creator.location || 'Central India'
+    };
 
     // Campaign history count
     const { count: campaignCount } = await supabase
