@@ -54,8 +54,14 @@ exports.handleAuthCallback = async (req, res) => {
     console.log('🔐 Token Permissions:', JSON.stringify(debugResponse.data.data.scopes, null, 2));
 
     // 3. Get the User's Instagram Business Account ID
-    // Strategy 1: Standard /me/accounts endpoint
-    const pagesResponse = await axios.get('https://graph.facebook.com/v19.0/me/accounts', {
+    // First get the user's FB ID for logging
+    const meResponse = await axios.get('https://graph.facebook.com/v21.0/me', {
+      params: { fields: 'id,name', access_token: longToken }
+    });
+    console.log('👤 Logged in as:', JSON.stringify(meResponse.data));
+
+    // Strategy 1: Standard /me/accounts (v21.0)
+    const pagesResponse = await axios.get('https://graph.facebook.com/v21.0/me/accounts', {
       params: { 
         access_token: longToken,
         fields: 'id,name,access_token,instagram_business_account'
@@ -63,23 +69,50 @@ exports.handleAuthCallback = async (req, res) => {
     });
 
     let pages = pagesResponse.data.data || [];
-    console.log('📄 Strategy 1 (/me/accounts) pages:', JSON.stringify(pages, null, 2));
+    console.log('📄 Strategy 1 (v21.0 /me/accounts) pages:', JSON.stringify(pages, null, 2));
 
-    // Strategy 2: If empty, try /me?fields=accounts
+    // Strategy 2: Try /me?fields=accounts (v21.0)
     if (pages.length === 0) {
       console.log('📄 Strategy 1 failed, trying Strategy 2...');
-      const altResponse = await axios.get('https://graph.facebook.com/v19.0/me', {
+      const altResponse = await axios.get('https://graph.facebook.com/v21.0/me', {
         params: {
           fields: 'accounts{id,name,access_token,instagram_business_account}',
           access_token: longToken
         }
       });
       pages = altResponse.data.accounts?.data || [];
-      console.log('📄 Strategy 2 (/me?fields=accounts) pages:', JSON.stringify(pages, null, 2));
+      console.log('📄 Strategy 2 pages:', JSON.stringify(pages, null, 2));
+    }
+
+    // Strategy 3: Try unversioned endpoint  
+    if (pages.length === 0) {
+      console.log('📄 Strategy 2 failed, trying Strategy 3 (unversioned)...');
+      const unversionedResponse = await axios.get('https://graph.facebook.com/me/accounts', {
+        params: { 
+          access_token: longToken,
+          fields: 'id,name,access_token,instagram_business_account'
+        }
+      });
+      pages = unversionedResponse.data.data || [];
+      console.log('📄 Strategy 3 (unversioned) pages:', JSON.stringify(pages, null, 2));
+    }
+
+    // Strategy 4: Try using the user's FB ID directly
+    if (pages.length === 0) {
+      console.log('📄 Strategy 3 failed, trying Strategy 4 (user ID)...');
+      const userId = meResponse.data.id;
+      const userPagesResponse = await axios.get(`https://graph.facebook.com/v21.0/${userId}/accounts`, {
+        params: { 
+          access_token: longToken,
+          fields: 'id,name,access_token,instagram_business_account'
+        }
+      });
+      pages = userPagesResponse.data.data || [];
+      console.log('📄 Strategy 4 (userId/accounts) pages:', JSON.stringify(pages, null, 2));
     }
 
     if (!pages || pages.length === 0) {
-      throw new Error('No Facebook Pages found. Please ensure: 1) You have a Facebook Page, 2) It is published, 3) You selected it during the connection flow.');
+      throw new Error('No Facebook Pages found. Your account may be too new for the API. Try using the Facebook account that owns the Meta Developer App, or wait a few hours and try again.');
     }
 
     // Find the page linked to an Instagram Business account
@@ -87,30 +120,39 @@ exports.handleAuthCallback = async (req, res) => {
     let igHandle = null;
 
     for (const page of pages) {
-      const igResponse = await axios.get(`https://graph.facebook.com/v19.0/${page.id}`, {
-        params: {
-          fields: 'instagram_business_account',
-          access_token: longToken
+      // Check if instagram_business_account was already returned in the fields
+      if (page.instagram_business_account) {
+        igBusinessId = page.instagram_business_account.id;
+      } else {
+        // Fetch it separately using the page's own access token
+        const pageToken = page.access_token || longToken;
+        const igResponse = await axios.get(`https://graph.facebook.com/v21.0/${page.id}`, {
+          params: {
+            fields: 'instagram_business_account',
+            access_token: pageToken
+          }
+        });
+        if (igResponse.data.instagram_business_account) {
+          igBusinessId = igResponse.data.instagram_business_account.id;
         }
-      });
+      }
 
-      if (igResponse.data.instagram_business_account) {
-        igBusinessId = igResponse.data.instagram_business_account.id;
-        
+      if (igBusinessId) {
         // Get the IG handle/username
-        const igInfo = await axios.get(`https://graph.facebook.com/v19.0/${igBusinessId}`, {
+        const igInfo = await axios.get(`https://graph.facebook.com/v21.0/${igBusinessId}`, {
           params: {
             fields: 'username,profile_picture_url,followers_count',
             access_token: longToken
           }
         });
         igHandle = igInfo.data.username;
+        console.log('✅ Found Instagram Business Account:', igBusinessId, 'Handle:', igHandle);
         break;
       }
     }
 
     if (!igBusinessId) {
-      throw new Error('No Instagram Business account found linked to your Facebook pages.');
+      throw new Error('No Instagram Business account found linked to your Facebook pages. Please link your Instagram Professional account to your Facebook Page first.');
     }
 
     // 4. Update Creator in Database
