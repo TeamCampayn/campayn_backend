@@ -51,6 +51,8 @@ exports.handleAuthCallback = async (req, res) => {
     });
 
     const pages = pagesResponse.data.data;
+    console.log('📄 Pages found for user:', JSON.stringify(pages, null, 2));
+
     if (!pages || pages.length === 0) {
       throw new Error('No Facebook Pages found linked to this account.');
     }
