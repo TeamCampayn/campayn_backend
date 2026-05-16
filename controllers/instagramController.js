@@ -178,6 +178,7 @@ exports.handleAuthCallback = async (req, res) => {
         .from('creators')
         .insert({
           user_id: creatorId,
+          name: meResponse.data.name || igHandle,
           ig_access_token: longToken,
           ig_user_id: igBusinessId,
           ig_token_expires_at: expiresAt.toISOString(),
