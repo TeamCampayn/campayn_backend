@@ -533,6 +533,48 @@ exports.getCreatorDashboard = async (req, res) => {
       campayn_score: campaynScore.total
     }).eq('id', creator.id);
 
+    // 7. Log Follower History (once per day per creator ideally, but simple log for now)
+    if (igData.followersCount > 0) {
+      const today = new Date().toISOString().split('T')[0];
+      const { data: existingLog } = await supabase
+        .from('follower_history')
+        .select('id')
+        .eq('creator_id', creator.id)
+        .gte('recorded_at', today)
+        .limit(1);
+
+      if (!existingLog || existingLog.length === 0) {
+        await supabase.from('follower_history').insert({
+          creator_id: creator.id,
+          followers_count: igData.followersCount
+        });
+      }
+    }
+
+    // 8. Fetch History for Chart (last 7 entries)
+    const { data: history } = await supabase
+      .from('follower_history')
+      .select('followers_count, recorded_at')
+      .eq('creator_id', creator.id)
+      .order('recorded_at', { ascending: true })
+      .limit(7);
+
+    const followerHistory = (history || []).map(h => ({
+      name: new Date(h.recorded_at).toLocaleDateString('en-US', { weekday: 'short' }),
+      followers: h.followers_count
+    }));
+
+    // Calculate Growth %
+    let growthRate = "0% this month";
+    if (history && history.length >= 2) {
+      const first = history[0].followers_count;
+      const last = history[history.length - 1].followers_count;
+      if (first > 0) {
+        const pct = ((last - first) / first) * 100;
+        growthRate = `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% since last week`;
+      }
+    }
+
     // Calculate percentiles (Global & City-Level Benchmarking)
     const { count: totalCreators } = await supabase.from('creators').select('id', { count: 'exact', head: true });
     const { count: lowerScoreCreators } = await supabase.from('creators').select('id', { count: 'exact', head: true }).lt('campayn_score', campaynScore.total);
@@ -571,11 +613,15 @@ exports.getCreatorDashboard = async (req, res) => {
         accountStatus: creator.account_status,
         createdAt: creator.created_at
       },
-      igData,
+      igData: {
+        ...igData,
+        growthRate
+      },
       campaynScore,
       rateCard,
       campaigns,
       opportunities,
+      followerHistory,
       wallet: { balance: parseFloat(wallet?.balance || 0) }
     });
 
