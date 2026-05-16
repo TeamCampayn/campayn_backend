@@ -44,8 +44,16 @@ exports.handleAuthCallback = async (req, res) => {
     const expiresAt = new Date();
     expiresAt.setSeconds(expiresAt.getSeconds() + (longTokenResponse.data.expires_in || 5184000));
 
+    // DEBUG: Check what permissions we actually have
+    const debugResponse = await axios.get('https://graph.facebook.com/debug_token', {
+      params: {
+        input_token: longToken,
+        access_token: `${process.env.FACEBOOK_APP_ID}|${process.env.FACEBOOK_APP_SECRET}`
+      }
+    });
+    console.log('🔐 Token Permissions:', JSON.stringify(debugResponse.data.data.scopes, null, 2));
+
     // 3. Get the User's Instagram Business Account ID
-    // First get FB Pages managed by user
     const pagesResponse = await axios.get('https://graph.facebook.com/v19.0/me/accounts', {
       params: { access_token: longToken }
     });
