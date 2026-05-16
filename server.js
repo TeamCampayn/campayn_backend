@@ -14,7 +14,6 @@ const supabase = createClient(
 const app = express();
 const server = http.createServer(app);
 
-// CORS configuration for frontend connection
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   "http://localhost:5173",
@@ -22,6 +21,7 @@ const allowedOrigins = [
   "http://localhost:3000",
   "https://campayn.in",
   "https://www.campayn.in",
+  "https://campayn-creators.vercel.app",
   "https://campayn-kohl.vercel.app",
   "https://campayn-frontend.netlify.app",
   "https://campayn-zeta.vercel.app",
