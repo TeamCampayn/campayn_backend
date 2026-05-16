@@ -75,6 +75,17 @@ router.post('/api/campaigns/invite', async (req, res) => {
     // 4. Log Activity
     await logActivity(campaignId, brandId, 'brand', 'creator_invited', `Invited creator to ${campaign.campaign_name}`, { creator_id: creatorId });
 
+    // 5. Send Real-Time Notification
+    const sendNotification = req.app.get('sendNotification');
+    if (sendNotification) {
+      await sendNotification(creatorId, {
+        type: 'invitation',
+        title: 'New Campaign Invitation!',
+        message: `You have been invited to join the campaign: ${campaign.campaign_name}`,
+        link: '/campaigns'
+      });
+    }
+
     res.json({ success: true, invite });
 
   } catch (error) {

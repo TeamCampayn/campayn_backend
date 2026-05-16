@@ -61,12 +61,48 @@ app.use((req, res, next) => {
 const activeRooms = new Map();
 const userSockets = new Map();
 
+// Global Notification Helper (exported for routes)
+const sendNotification = async (userId, notification) => {
+  const { type, title, message, link } = notification;
+
+  try {
+    // 1. Save to DB
+    await supabase.from('notifications').insert({
+      user_id: userId,
+      type,
+      title,
+      message,
+      link,
+      is_read: false
+    });
+  } catch (err) {
+    console.error('Notification DB Error:', err.message);
+  }
+
+  // 2. Emit via Socket.IO to private user room
+  io.to(`user_${userId}`).emit('new_notification', {
+    type,
+    title,
+    message,
+    link,
+    createdAt: new Date()
+  });
+};
+
+app.set('sendNotification', sendNotification);
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
 
   // Join brand-specific room for campaign notifications
   socket.on('join_brand_room', (brandId) => {
     socket.join(`brand_${brandId}`);
+  });
+
+  // Join private user room for notifications
+  socket.on('join_user_room', (userId) => {
+    socket.join(`user_${userId}`);
+    console.log(`User ${userId} joined private notification room`);
   });
 
   // Join a quotation room
