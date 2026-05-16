@@ -77,17 +77,42 @@ exports.handleAuthCallback = async (req, res) => {
       }
     };
 
-    // Fetch pages with retry
+    // Fetch pages with retry — Strategy 1: Standard /me/accounts
     const pagesResponse = await retryRequest('https://graph.facebook.com/v19.0/me/accounts', {
       access_token: longToken,
       fields: 'id,name,access_token,instagram_business_account'
     });
 
     let pages = pagesResponse.data.data || [];
-    console.log('📄 Pages found:', JSON.stringify(pages, null, 2));
+    console.log('📄 Strategy 1 (/me/accounts) pages:', pages.length);
+
+    // Strategy 2: Business Portfolio pages (for Meta Business Suite users)
+    if (pages.length === 0) {
+      console.log('📄 Strategy 1 empty, trying Business Portfolio...');
+      try {
+        const bizResponse = await retryRequest('https://graph.facebook.com/v19.0/me/businesses', {
+          access_token: longToken,
+          fields: 'id,name'
+        });
+        const businesses = bizResponse.data.data || [];
+        console.log('🏢 Businesses found:', JSON.stringify(businesses, null, 2));
+
+        for (const biz of businesses) {
+          const bizPagesResponse = await retryRequest(`https://graph.facebook.com/v19.0/${biz.id}/owned_pages`, {
+            access_token: longToken,
+            fields: 'id,name,access_token,instagram_business_account'
+          });
+          const bizPages = bizPagesResponse.data.data || [];
+          console.log(`📄 Pages in business "${biz.name}":`, JSON.stringify(bizPages, null, 2));
+          pages = pages.concat(bizPages);
+        }
+      } catch (bizErr) {
+        console.log('⚠️ Business API failed (may need business_management permission):', bizErr.response?.data?.error?.message || bizErr.message);
+      }
+    }
 
     if (pages.length === 0) {
-      throw new Error('No Facebook Pages found. Ensure your Page is published and you selected it during the connection. If using a new account, try with the account that owns the Meta Developer App.');
+      throw new Error('No Facebook Pages found. Ensure your Page is published and you granted page access during the connection flow.');
     }
 
     // Find the page linked to an Instagram Business account
