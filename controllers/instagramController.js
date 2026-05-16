@@ -54,15 +54,32 @@ exports.handleAuthCallback = async (req, res) => {
     console.log('🔐 Token Permissions:', JSON.stringify(debugResponse.data.data.scopes, null, 2));
 
     // 3. Get the User's Instagram Business Account ID
+    // Strategy 1: Standard /me/accounts endpoint
     const pagesResponse = await axios.get('https://graph.facebook.com/v19.0/me/accounts', {
-      params: { access_token: longToken }
+      params: { 
+        access_token: longToken,
+        fields: 'id,name,access_token,instagram_business_account'
+      }
     });
 
-    const pages = pagesResponse.data.data;
-    console.log('📄 Pages found for user:', JSON.stringify(pages, null, 2));
+    let pages = pagesResponse.data.data || [];
+    console.log('📄 Strategy 1 (/me/accounts) pages:', JSON.stringify(pages, null, 2));
+
+    // Strategy 2: If empty, try /me?fields=accounts
+    if (pages.length === 0) {
+      console.log('📄 Strategy 1 failed, trying Strategy 2...');
+      const altResponse = await axios.get('https://graph.facebook.com/v19.0/me', {
+        params: {
+          fields: 'accounts{id,name,access_token,instagram_business_account}',
+          access_token: longToken
+        }
+      });
+      pages = altResponse.data.accounts?.data || [];
+      console.log('📄 Strategy 2 (/me?fields=accounts) pages:', JSON.stringify(pages, null, 2));
+    }
 
     if (!pages || pages.length === 0) {
-      throw new Error('No Facebook Pages found linked to this account.');
+      throw new Error('No Facebook Pages found. Please ensure: 1) You have a Facebook Page, 2) It is published, 3) You selected it during the connection flow.');
     }
 
     // Find the page linked to an Instagram Business account
