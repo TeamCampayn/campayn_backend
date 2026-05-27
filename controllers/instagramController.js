@@ -192,12 +192,14 @@ exports.handleAuthCallback = async (req, res) => {
     }
 
     // 5. Redirect back to frontend
-    res.redirect(`${process.env.FRONTEND_URL}/?status=success&handle=${igHandle}`);
+    const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
+    res.redirect(`${frontendUrl}/?status=success&handle=${igHandle}`);
 
   } catch (error) {
     const fbError = error.response?.data?.error?.message || error.message;
     console.error('❌ Instagram Auth Error:', error.response?.data || error.message);
-    res.redirect(`${process.env.FRONTEND_URL}/?status=error&message=${encodeURIComponent(fbError)}`);
+    const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
+    res.redirect(`${frontendUrl}/?status=error&message=${encodeURIComponent(fbError)}`);
   }
 };
 
@@ -483,7 +485,7 @@ exports.getCreatorDashboard = async (req, res) => {
       totalDeliverables: 0,
       completedDeliverables: 0
     };
-    const campaigns = (campaignCreators || []).map(cc => {
+     const campaigns = (campaignCreators || []).map(cc => {
       campaignStats.totalDeliverables += cc.deliverables_count || 0;
       campaignStats.completedDeliverables += cc.deliverables_completed || 0;
       return {
@@ -493,6 +495,8 @@ exports.getCreatorDashboard = async (req, res) => {
         status: cc.status,
         selectionStatus: cc.selection_status,
         cpvRate: cc.campaigns?.cpv_rate,
+        minGuarantee: cc.campaigns?.min_guarantee_per_creator || 0,
+        maxPayout: cc.campaigns?.max_payout_per_creator || 0,
         deliverables: cc.deliverables_count,
         completed: cc.deliverables_completed,
         createdAt: cc.created_at,
@@ -504,7 +508,7 @@ exports.getCreatorDashboard = async (req, res) => {
     const { data: activeCampaigns } = await supabase
       .from('campaigns')
       .select('*, brands(brand_name)')
-      .eq('status', 'campaign_active')
+      .eq('phase', 'campaign_active')
       .limit(6);
 
     const opportunities = (activeCampaigns || []).map(camp => ({
@@ -512,6 +516,8 @@ exports.getCreatorDashboard = async (req, res) => {
       name: camp.campaign_name,
       brand: camp.brands?.brand_name,
       cpvRate: camp.cpv_rate,
+      minGuarantee: camp.min_guarantee_per_creator || 0,
+      maxPayout: camp.max_payout_per_creator || 0,
       budget: camp.budget,
       contentTypes: camp.content_types,
       matchScore: calculateMatchScore(creator, camp)

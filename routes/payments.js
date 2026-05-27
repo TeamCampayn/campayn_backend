@@ -200,18 +200,62 @@ router.post('/api/campaigns/:campaignId/verify-payment', async (req, res) => {
       });
     }
 
-    // Update campaign phase to content_approval if payment is successful
+    // Update campaign phase based on current state
     if (payment.status === 'captured') {
-      const { error: campaignUpdateError } = await supabase
+      const { data: campaign } = await supabase
+        .from('campaigns')
+        .select('phase, brand_id')
+        .eq('id', campaignId)
+        .single();
+
+      let nextPhase = 'content_approval'; // Default
+      if (campaign?.phase === 'approved_pending_funds') {
+        nextPhase = 'creator_selection';
+      }
+
+      await supabase
         .from('campaigns')
         .update({
-          phase: 'content_approval',
+          phase: nextPhase,
           payment_completed_at: new Date().toISOString()
         })
         .eq('id', campaignId);
 
-      if (campaignUpdateError) {
-        console.error('Error updating campaign phase:', campaignUpdateError);
+      // Update Brand Wallet
+      if (campaign?.brand_id) {
+        // Upsert wallet and add balance
+        const { data: wallet } = await supabase
+          .from('brand_wallets')
+          .select('id, balance')
+          .eq('brand_id', campaign.brand_id)
+          .single();
+
+        if (wallet) {
+          await supabase
+            .from('brand_wallets')
+            .update({ 
+              balance: Number(wallet.balance) + (payment.amount / 100),
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', wallet.id);
+        } else {
+          await supabase
+            .from('brand_wallets')
+            .insert({
+              brand_id: campaign.brand_id,
+              balance: payment.amount / 100
+            });
+        }
+
+        // Record Transaction
+        await supabase.from('brand_transactions').insert({
+          brand_id: campaign.brand_id,
+          amount: payment.amount / 100,
+          type: 'topup',
+          status: 'completed',
+          reference_id: razorpay_payment_id,
+          description: `Campaign funding for ${campaignId}`
+        });
       }
 
       // Log activity
@@ -219,15 +263,15 @@ router.post('/api/campaigns/:campaignId/verify-payment', async (req, res) => {
         .from('campaign_activities')
         .insert([{
           campaign_id: campaignId,
-          user_id: payment.notes?.brand_id || 'system',
+          user_id: campaign?.brand_id || 'system',
           user_type: 'brand',
           activity_type: 'payment_completed',
-          description: `Payment of ₹${payment.amount / 100} completed successfully`,
+          description: `Payment of ₹${payment.amount / 100} completed. Campaign moved to ${nextPhase}.`,
           metadata: {
             payment_id: razorpay_payment_id,
             order_id: razorpay_order_id,
             amount: payment.amount / 100,
-            method: payment.method
+            next_phase: nextPhase
           }
         }]);
     }
@@ -476,6 +520,43 @@ router.post('/api/campaigns/:campaignId/refund-payment', async (req, res) => {
       error: 'Failed to process refund',
       details: error.message
     });
+  }
+});
+
+// Get Brand Wallet Balance and Transactions
+router.get('/api/brand/wallet', async (req, res) => {
+  try {
+    const brandId = req.query.brandId;
+    if (!brandId) return res.status(400).json({ error: 'Brand ID is required' });
+
+    // 1. Get Wallet
+    const { data: wallet, error: walletErr } = await supabase
+      .from('brand_wallets')
+      .select('*')
+      .eq('brand_id', brandId)
+      .single();
+
+    if (walletErr && walletErr.code !== 'PGRST116') throw walletErr;
+
+    // 2. Get Recent Transactions
+    const { data: transactions, error: transErr } = await supabase
+      .from('brand_transactions')
+      .select('*')
+      .eq('brand_id', brandId)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (transErr) throw transErr;
+
+    res.json({
+      success: true,
+      wallet: wallet || { balance: 0, currency: 'INR' },
+      transactions: transactions || []
+    });
+
+  } catch (error) {
+    console.error('Error fetching wallet:', error);
+    res.status(500).json({ error: 'Failed to fetch wallet information' });
   }
 });
 

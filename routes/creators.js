@@ -198,4 +198,92 @@ router.get('/creators/:id', async (req, res) => {
   }
 });
 
+// Get invitation teaser data
+router.get('/creators/invite/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    const { data: invite, error } = await supabase
+      .from('creator_invites')
+      .select('*, campaigns(campaign_name, description, target_category, brands(brand_name))')
+      .eq('invite_token', token)
+      .single();
+
+    if (error || !invite) {
+      return res.status(404).json({ error: 'Invalid or expired invitation token.' });
+    }
+
+    res.json({
+      success: true,
+      teaser: invite.teaser_data,
+      campaign: invite.campaign,
+      status: invite.status
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+// Claim invitation (Link creator to user account)
+router.post('/creators/invite/:token/claim', async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required to claim invitation.' });
+    }
+
+    // 1. Verify token
+    const { data: invite, error: inviteErr } = await supabase
+      .from('creator_invites')
+      .select('*')
+      .eq('invite_token', token)
+      .single();
+
+    if (inviteErr || !invite) {
+      return res.status(404).json({ error: 'Invalid token.' });
+    }
+
+    if (invite.status !== 'pending') {
+      return res.status(400).json({ error: 'Invitation already claimed or rejected.' });
+    }
+
+    // 2. Link creator record to this user
+    const { error: linkErr } = await supabase
+      .from('creators')
+      .update({ user_id: userId })
+      .eq('id', invite.creator_id);
+
+    if (linkErr) throw linkErr;
+
+    // 3. Update invite status
+    await supabase
+      .from('creator_invites')
+      .update({ 
+        status: 'accepted',
+        accepted_at: new Date().toISOString()
+      })
+      .eq('id', invite.id);
+
+    // 4. Also add creator to the campaign_creators table if not already there
+    await supabase.from('campaign_creators').upsert({
+      campaign_id: invite.campaign_id,
+      creator_id: invite.creator_id,
+      status: 'invited',
+      selection_status: 'pending'
+    });
+
+    res.json({
+      success: true,
+      message: 'Invitation claimed successfully! Welcome to the campaign.',
+      campaignId: invite.campaign_id
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
 module.exports = router;
