@@ -190,11 +190,8 @@ router.get('/api/dashboard/stats/:brandId', async (req, res) => {
 
     // Calculate total spend from active/completed campaigns
     const activeCampaigns = campaignList.filter(c => 
-      c.phase === 'campaign_active' || 
-      c.phase === 'content_creation' || 
-      c.phase === 'completed' ||
-      c.phase === 'campaign_complete' ||
-      c.status === 'completed'
+      c.phase !== 'draft' && 
+      c.status !== 'cancelled'
     );
     totalSpend = activeCampaigns.reduce((sum, c) => sum + (c.budget || 0), 0);
 
@@ -225,7 +222,7 @@ router.get('/api/dashboard/stats/:brandId', async (req, res) => {
         if (creators && creators.length > 0) {
           totalReach = creators.reduce((sum, c) => {
             const followers = c.followers_count || c.ig_followers || 0;
-            return sum + Math.round(followers * 0.15); // 15% estimated reach
+            return sum + Math.round(followers * 0.95); // 95% estimated reach
           }, 0);
 
           if (totalReach === 0) {
@@ -234,10 +231,10 @@ router.get('/api/dashboard/stats/:brandId', async (req, res) => {
 
           // Calculate engagement metrics
           creators.forEach(c => {
-            const views = c.avg_views || 15000;
-            const likes = c.avg_likes || Math.round(views * 0.045);
-            const comments = c.avg_comments || Math.round(views * 0.003);
-            const shares = Math.round(likes * 0.08);
+            const views = c.avg_views || Math.round((c.followers_count || c.ig_followers || 75000) * 1.4); // 1.4x of followers count
+            const likes = c.avg_likes || Math.round(views * 0.075);
+            const comments = c.avg_comments || Math.round(views * 0.008);
+            const shares = Math.round(likes * 0.12);
 
             totalLikes += likes;
             totalComments += comments;
@@ -251,10 +248,10 @@ router.get('/api/dashboard/stats/:brandId', async (req, res) => {
 
           // Build top creators list
           topCreators = creators.slice(0, 5).map(c => {
-            const views = c.avg_views || 15000;
-            const likes = c.avg_likes || Math.round(views * 0.045);
-            const comments = c.avg_comments || Math.round(views * 0.003);
-            const shares = Math.round(likes * 0.08);
+            const views = c.avg_views || Math.round((c.followers_count || c.ig_followers || 75000) * 1.4);
+            const likes = c.avg_likes || Math.round(views * 0.075);
+            const comments = c.avg_comments || Math.round(views * 0.008);
+            const shares = Math.round(likes * 0.12);
             const eng = likes + comments + shares;
 
             return {
@@ -668,6 +665,317 @@ router.get('/api/campaigns/:campaignId', async (req, res) => {
     console.error('Error fetching campaign details:', error);
     res.status(500).json({
       error: 'Failed to fetch campaign details',
+      details: error.message
+    });
+  }
+});
+
+// GET /api/campaigns/:campaignId/demographics
+router.get('/api/campaigns/:campaignId/demographics', async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+
+    // 1. Fetch campaign
+    const { data: campaign, error: campaignError } = await supabase
+      .from('campaigns')
+      .select('*')
+      .eq('id', campaignId)
+      .single();
+
+    if (campaignError || !campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    // 2. Fetch all creators associated with this campaign
+    const { data: ccList } = await supabase
+      .from('campaign_creators')
+      .select('creator_id')
+      .eq('campaign_id', campaignId);
+    const ccIds = ccList ? ccList.map(cc => cc.creator_id).filter(Boolean) : [];
+
+    const { data: appList } = await supabase
+      .from('applications')
+      .select('user_id')
+      .eq('campaign_id', campaignId);
+    const appUserIds = appList ? appList.map(app => app.user_id).filter(Boolean) : [];
+
+    let creators = [];
+    if (ccIds.length > 0 || appUserIds.length > 0) {
+      let query = supabase.from('creators').select('*');
+      let filters = [];
+      if (ccIds.length > 0) filters.push(`id.in.(${ccIds.join(',')})`);
+      if (appUserIds.length > 0) filters.push(`user_id.in.(${appUserIds.join(',')})`);
+      
+      const { data, error } = await query.or(filters.join(','));
+      if (error) console.error('Error fetching creators for demographics:', error);
+      creators = data || [];
+    }
+
+    // Filter connected creators
+    const connectedCreators = creators.filter(c => c.ig_access_token && c.ig_user_id);
+
+    // Helpers
+    const parseAgeKey = (key) => {
+      if (key.includes('13-17')) return '13-17';
+      if (key.includes('18-24')) return '18-24';
+      if (key.includes('25-34')) return '25-34';
+      if (key.includes('35-44')) return '35-44';
+      return '45+';
+    };
+
+    const fetchForCreator = async (creator) => {
+      const { ig_user_id, ig_access_token } = creator;
+      const breakdowns = ['age', 'gender', 'city', 'country'];
+      const results = {};
+      
+      await Promise.all(breakdowns.map(async (bd) => {
+        try {
+          const response = await axios.get(`https://graph.facebook.com/v19.0/${ig_user_id}/insights`, {
+            params: {
+              metric: 'follower_demographics',
+              metric_type: 'total_value',
+              breakdown: bd,
+              period: 'lifetime',
+              access_token: ig_access_token
+            },
+            timeout: 5000
+          });
+          const values = response.data?.data?.[0]?.values?.[0]?.value;
+          if (values) {
+            results[bd] = values;
+          }
+        } catch (err) {
+          console.error(`[Meta API Demographics Error] for creator ${creator.name} (${bd}):`, err.response?.data || err.message);
+        }
+      }));
+      return results;
+    };
+
+    // Aggregations
+    let ageCounts = { '13-17': 0, '18-24': 0, '25-34': 0, '35-44': 0, '45+': 0 };
+    let genderCounts = { 'Male': 0, 'Female': 0, 'Non-Binary': 0 };
+    let cityCounts = {};
+    let countryCounts = {};
+    let hasRealData = false;
+
+    if (connectedCreators.length > 0) {
+      const creatorsData = await Promise.all(connectedCreators.map(async (creator) => {
+        return await fetchForCreator(creator);
+      }));
+
+      creatorsData.forEach(cData => {
+        if (!cData) return;
+        
+        if (cData.age) {
+          Object.entries(cData.age).forEach(([key, val]) => {
+            const mappedKey = parseAgeKey(key);
+            ageCounts[mappedKey] += Number(val || 0);
+            hasRealData = true;
+          });
+        }
+        
+        if (cData.gender) {
+          Object.entries(cData.gender).forEach(([key, val]) => {
+            let mappedKey = 'Non-Binary';
+            if (key.startsWith('F')) mappedKey = 'Female';
+            else if (key.startsWith('M')) mappedKey = 'Male';
+            genderCounts[mappedKey] += Number(val || 0);
+            hasRealData = true;
+          });
+        }
+
+        if (cData.city) {
+          Object.entries(cData.city).forEach(([key, val]) => {
+            const cityName = key.split(',')[0].trim();
+            cityCounts[cityName] = (cityCounts[cityName] || 0) + Number(val || 0);
+            hasRealData = true;
+          });
+        }
+
+        if (cData.country) {
+          Object.entries(cData.country).forEach(([key, val]) => {
+            countryCounts[key] = (countryCounts[key] || 0) + Number(val || 0);
+            hasRealData = true;
+          });
+        }
+      });
+    }
+
+    let ageList = [];
+    let genderList = [];
+    let cityList = [];
+    let countryList = [];
+
+    if (hasRealData) {
+      const totalAge = Object.values(ageCounts).reduce((a, b) => a + b, 0) || 1;
+      ageList = Object.entries(ageCounts).map(([name, val]) => ({
+        name,
+        value: Math.round((val / totalAge) * 100)
+      }));
+
+      const totalGender = Object.values(genderCounts).reduce((a, b) => a + b, 0) || 1;
+      genderList = Object.entries(genderCounts).map(([name, val]) => ({
+        name,
+        value: Math.round((val / totalGender) * 100)
+      })).filter(g => g.value > 0);
+
+      const totalCity = Object.values(cityCounts).reduce((a, b) => a + b, 0) || 1;
+      cityList = Object.entries(cityCounts)
+        .map(([name, val]) => ({
+          name,
+          value: Math.round((val / totalCity) * 100)
+        }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 5);
+
+      const totalCountry = Object.values(countryCounts).reduce((a, b) => a + b, 0) || 1;
+      const rawCountryList = Object.entries(countryCounts)
+        .map(([code, val]) => {
+          let name = code;
+          let flag = '🌍';
+          if (code === 'IN') { name = 'India'; flag = '🇮🇳'; }
+          else if (code === 'US') { name = 'United States'; flag = '🇺🇸'; }
+          else if (code === 'GB') { name = 'United Kingdom'; flag = '🇬🇧'; }
+          else if (code === 'AE') { name = 'United Arab Emirates'; flag = '🇦🇪'; }
+          else if (code === 'SG') { name = 'Singapore'; flag = '🇸🇬'; }
+          return { name, value: Math.round((val / totalCountry) * 100), flag };
+        })
+        .sort((a, b) => b.value - a.value);
+
+      countryList = rawCountryList.slice(0, 2);
+      const sumCountries = countryList.reduce((sum, c) => sum + c.value, 0);
+      if (sumCountries < 100 && rawCountryList.length > 2) {
+        countryList.push({ name: 'Others', value: 100 - sumCountries, flag: '🌍' });
+      } else if (sumCountries < 100) {
+        const factor = 100 / (sumCountries || 1);
+        countryList.forEach(c => {
+          c.value = Math.round(c.value * factor);
+        });
+      }
+    } else {
+      // Fallback calibration
+      const category = (campaign.target_category || campaign.campaign_name || 'Lifestyle').toLowerCase();
+
+      let male = 50;
+      let female = 50;
+      let nonBinary = 0;
+
+      if (category.includes('beauty') || category.includes('fashion') || category.includes('makeup') || category.includes('skincare')) {
+        female = 84;
+        male = 12;
+        nonBinary = 4;
+      } else if (category.includes('tech') || category.includes('gaming') || category.includes('automotive') || category.includes('gadgets')) {
+        male = 75;
+        female = 21;
+        nonBinary = 4;
+      } else if (category.includes('sports') || category.includes('fitness') || category.includes('gym')) {
+        male = 60;
+        female = 35;
+        nonBinary = 5;
+      }
+
+      genderList = [
+        { name: 'Male', value: male },
+        { name: 'Female', value: female },
+        { name: 'Non-Binary', value: nonBinary }
+      ].filter(g => g.value > 0);
+
+      ageList = [
+        { name: '13-17', value: 8 },
+        { name: '18-24', value: 45 },
+        { name: '25-34', value: 35 },
+        { name: '35-44', value: 10 },
+        { name: '45+', value: 2 }
+      ];
+
+      if (category.includes('gaming') || category.includes('meme')) {
+        ageList = [
+          { name: '13-17', value: 22 },
+          { name: '18-24', value: 58 },
+          { name: '25-34', value: 16 },
+          { name: '35-44', value: 3 },
+          { name: '45+', value: 1 }
+        ];
+      } else if (category.includes('finance') || category.includes('business') || category.includes('real estate')) {
+        ageList = [
+          { name: '13-17', value: 2 },
+          { name: '18-24', value: 28 },
+          { name: '25-34', value: 52 },
+          { name: '35-44', value: 14 },
+          { name: '45+', value: 4 }
+        ];
+      }
+
+      cityList = [
+        { name: 'Indore', value: 35 },
+        { name: 'Bhopal', value: 25 },
+        { name: 'Dewas', value: 15 },
+        { name: 'Jabalpur', value: 15 },
+        { name: 'Gwalior', value: 10 }
+      ];
+
+      countryList = [
+        { name: 'India', value: 98, flag: '🇮🇳' },
+        { name: 'Others', value: 2, flag: '🌍' }
+      ];
+    }
+
+    // Secondary aggregations
+    const categoriesMap = {};
+    creators.forEach(c => {
+      const cat = c.category || 'Lifestyle';
+      categoriesMap[cat] = (categoriesMap[cat] || 0) + (c.followers_count || 1);
+    });
+    const totalCatWeight = Object.values(categoriesMap).reduce((a, b) => a + b, 0) || 1;
+    const niches = Object.entries(categoriesMap).map(([name, val]) => ({
+      name,
+      value: Math.round((val / totalCatWeight) * 100)
+    })).sort((a, b) => b.value - a.value);
+
+    if (niches.length === 0) {
+       niches.push({ name: 'Lifestyle', value: 100 });
+    }
+
+    const campaignWords = (campaign.campaign_name || '').split(/[\s-_]+/).map(w => w.toLowerCase()).filter(w => w.length > 3);
+    const keywordsSet = new Set();
+    campaignWords.forEach(w => keywordsSet.add(w));
+    niches.forEach(n => keywordsSet.add(n.name.toLowerCase()));
+    ['creativelife', 'branded', 'campayn', 'loveit'].forEach(w => keywordsSet.add(w));
+    const keywords = Array.from(keywordsSet).slice(0, 10);
+
+    const er = campaign.actual_metrics?.avgEngagement || 3.5;
+    const positive = Math.min(92, Math.max(50, 70 + Math.round((er - 3) * 4)));
+    const negative = Math.max(2, Math.min(15, 6 - Math.round((er - 3) * 0.5)));
+    const neutral = 100 - positive - negative;
+
+    const sentiment = [
+      { name: 'Positive', value: positive, color: '#10b981' },
+      { name: 'Neutral', value: neutral, color: '#64748b' },
+      { name: 'Negative', value: negative, color: '#ef4444' }
+    ];
+
+    const cpc_clicks = Number((1.5 + Math.min(12, er * 0.8)).toFixed(1));
+
+    res.json({
+      success: true,
+      demographics: {
+        age: ageList,
+        gender: genderList,
+        cities: cityList,
+        countries: countryList,
+        niches,
+        keywords,
+        sentiment,
+        cpc_clicks,
+        dataSource: hasRealData ? 'meta_api' : 'simulated_fallback'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching demographics:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch campaign demographics',
       details: error.message
     });
   }
@@ -2402,7 +2710,7 @@ router.get('/api/payments/pending', async (req, res) => {
 });
 
 // Helper functions for real-time post insights fetching and fallbacks
-async function fetchInstagramPostMetrics(postUrl, username) {
+async function fetchInstagramPostMetrics(postUrl, username, creatorToken = null, creatorIgUserId = null) {
   // Hardcoded real-time stats for the user's specific test reel
   if (postUrl && postUrl.includes('DT-paP2jw3P')) {
     return {
@@ -2420,12 +2728,152 @@ async function fetchInstagramPostMetrics(postUrl, username) {
     };
   }
 
+  // If creator's own OAuth credentials are provided, attempt to fetch directly first
+  if (creatorToken && creatorIgUserId) {
+    try {
+      console.log(`[Instagram Sync] Fetching directly using creator's OAuth credentials (IG User ID: ${creatorIgUserId})`);
+      
+      const mediaRes = await axios.get(`https://graph.facebook.com/v19.0/${creatorIgUserId}/media`, {
+        params: {
+          fields: 'id,permalink,like_count,comments_count,media_type,timestamp',
+          limit: 50,
+          access_token: creatorToken
+        }
+      });
+
+      const batch = mediaRes.data?.data || [];
+      
+      const normalizePath = (u) => {
+        try { const parsed = new URL(u); return parsed.pathname.replace(/\/+$/, ''); } catch { return (u || '').replace(/^https?:\/\//, '').replace(/^[^/]+/, '').split('?')[0].split('#')[0].replace(/\/+$/, ''); }
+      };
+      const extractShortcode = (u) => { const m = normalizePath(u).match(/\/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/); return m ? m[1] : null; };
+      const normRequestedPath = normalizePath(postUrl);
+      const requestedShortcode = extractShortcode(postUrl);
+
+      let matchedPost = batch.find(post => post.permalink === postUrl);
+      if (!matchedPost) {
+        matchedPost = batch.find(post => normalizePath(post.permalink || '') === normRequestedPath);
+      }
+      if (!matchedPost && requestedShortcode) {
+        matchedPost = batch.find(post => (post.permalink || '').includes(`/${requestedShortcode}/`));
+      }
+      if (!matchedPost) {
+        matchedPost = batch.find(post => { const p = post.permalink || ''; return postUrl.includes(p) || p.includes(postUrl); });
+      }
+
+      if (matchedPost) {
+        console.log(`[Instagram Sync] Match found using creator token! Media ID: ${matchedPost.id}`);
+        let views = 0;
+        
+        // Try to fetch views/plays metric via media insights
+        try {
+          const insightsRes = await axios.get(`https://graph.facebook.com/v19.0/${matchedPost.id}/insights`, {
+            params: {
+              metric: 'plays',
+              access_token: creatorToken
+            }
+          });
+          if (insightsRes.data?.data) {
+            const playsMetric = insightsRes.data.data.find(m => m.name === 'plays');
+            if (playsMetric && playsMetric.values && playsMetric.values.length > 0) {
+              views = playsMetric.values[0].value || 0;
+            }
+          }
+        } catch (insightErr) {
+          console.log(`[Instagram Sync] 'plays' metric failed, trying 'video_views'.`);
+          try {
+            const insightsRes = await axios.get(`https://graph.facebook.com/v19.0/${matchedPost.id}/insights`, {
+              params: {
+                metric: 'video_views',
+                access_token: creatorToken
+              }
+            });
+            if (insightsRes.data?.data) {
+              const viewsMetric = insightsRes.data.data.find(m => m.name === 'video_views');
+              if (viewsMetric && viewsMetric.values && viewsMetric.values.length > 0) {
+                views = viewsMetric.values[0].value || 0;
+              }
+            }
+          } catch (vidErr) {
+            console.log(`[Instagram Sync] 'video_views' metric failed. Using like-multiplier fallback.`);
+          }
+        }
+
+        // If plays / video_views insights fail or return 0, fall back to likes * 22
+        if (!views && matchedPost.like_count) {
+          views = Math.round(matchedPost.like_count * 22);
+        }
+
+        // Fetch profile stats for average metrics & followers
+        let profileFollowers = 0;
+        try {
+          const profileRes = await axios.get(`https://graph.facebook.com/v19.0/${creatorIgUserId}`, {
+            params: {
+              fields: 'followers_count',
+              access_token: creatorToken
+            }
+          });
+          profileFollowers = profileRes.data?.followers_count || 0;
+        } catch (profErr) {
+          console.error('[Instagram Sync] Profile stats fetch failed:', profErr.message);
+        }
+
+        // Calculate average metrics from recent 15 posts
+        let avgViews = 0;
+        let avgLikes = 0;
+        let avgComments = 0;
+        let engagementRate = 0;
+
+        const statsMedia = batch.slice(0, 15);
+        if (statsMedia.length > 0) {
+          let totalViews = 0;
+          let totalLikes = 0;
+          let totalComments = 0;
+
+          statsMedia.forEach(m => {
+            totalViews += (m.like_count || 0) * 22;
+            totalLikes += (m.like_count || 0);
+            totalComments += (m.comments_count || 0);
+          });
+
+          avgViews = Math.round(totalViews / statsMedia.length);
+          avgLikes = Math.round(totalLikes / statsMedia.length);
+          avgComments = Math.round(totalComments / statsMedia.length);
+
+          if (profileFollowers > 50) {
+            engagementRate = Number((((avgLikes + avgComments) / profileFollowers) * 100).toFixed(2));
+          } else {
+            engagementRate = Number((((avgLikes + avgComments) / Math.max(10, avgViews)) * 100).toFixed(2));
+          }
+          engagementRate = Math.min(25.0, engagementRate);
+        }
+
+        return {
+          success: true,
+          views: views || 0,
+          likes: matchedPost.like_count || 0,
+          comments: matchedPost.comments_count || 0,
+          profileStats: {
+            followers: profileFollowers || 0,
+            avg_views: avgViews,
+            engagement_rate: engagementRate,
+            avg_likes: avgLikes,
+            avg_comments: avgComments
+          }
+        };
+      }
+      console.log(`[Instagram Sync] Post not found in creator's media. Falling back to business discovery.`);
+    } catch (directErr) {
+      console.error('[Instagram Sync] Direct OAuth media fetch failed:', directErr.response?.data || directErr.message);
+    }
+  }
+
   const ACCESS_TOKEN = process.env.IG_ACCESS_TOKEN;
   const OUR_IG_ID = process.env.IG_BUSINESS_ID;
 
   if (!ACCESS_TOKEN || !OUR_IG_ID) {
-    console.log('⚠️ IG_ACCESS_TOKEN or IG_BUSINESS_ID is not configured. Falling back to realistic simulated data.');
-    return getFallbackMetrics(username);
+    console.log('⚠️ IG_ACCESS_TOKEN or IG_BUSINESS_ID is not configured. Real-time fetch is disabled.');
+    return { success: false, error: 'Instagram credentials not set.', views: 0, likes: 0, comments: 0 };
   }
 
   try {
@@ -2522,8 +2970,6 @@ async function fetchInstagramPostMetrics(postUrl, username) {
       if (matchedPost) {
         let views = matchedPost.view_count || 0;
         if (!views && matchedPost.like_count) {
-          // Instagram reels typically have a 15-30x view-to-like ratio.
-          // We use a realistic 22x multiplier to calculate real-time views from live likes.
           views = Math.round(matchedPost.like_count * 22);
         }
         return {
@@ -2677,26 +3123,33 @@ router.post('/api/applications/:applicationId/submit-post', async (req, res) => 
       return res.status(404).json({ success: false, error: 'Application not found' });
     }
 
-    // Fetch creator's Instagram handle separately to prevent relationship mapping errors
+    // Fetch creator's Instagram handle and OAuth tokens
     let igHandle = null;
+    let creatorToken = null;
+    let creatorIgUserId = null;
+
     if (application.user_id) {
-      const { data: social } = await supabase
-        .from('social_connections')
-        .select('handle')
+      const { data: creatorProfile } = await supabase
+        .from('creators')
+        .select('ig_handle, ig_access_token, ig_user_id')
         .eq('user_id', application.user_id)
-        .eq('platform', 'instagram')
         .maybeSingle();
-      if (social) {
-        igHandle = social.handle;
+
+      if (creatorProfile) {
+        igHandle = creatorProfile.ig_handle;
+        creatorToken = creatorProfile.ig_access_token;
+        creatorIgUserId = creatorProfile.ig_user_id;
       }
+
       if (!igHandle) {
-        const { data: creatorProfile } = await supabase
-          .from('creators')
-          .select('ig_handle')
+        const { data: social } = await supabase
+          .from('social_connections')
+          .select('handle')
           .eq('user_id', application.user_id)
+          .eq('platform', 'instagram')
           .maybeSingle();
-        if (creatorProfile) {
-          igHandle = creatorProfile.ig_handle;
+        if (social) {
+          igHandle = social.handle;
         }
       }
     }
@@ -2761,7 +3214,7 @@ router.post('/api/applications/:applicationId/submit-post', async (req, res) => 
 
     try {
       if (igHandle) {
-        const insights = await fetchInstagramPostMetrics(postUrl, igHandle);
+        const insights = await fetchInstagramPostMetrics(postUrl, igHandle, creatorToken, creatorIgUserId);
         if (insights && insights.success) {
           initialViews = insights.views || 0;
           initialLikes = insights.likes || 0;
@@ -2859,26 +3312,33 @@ router.post('/api/applications/:applicationId/refresh-insights', async (req, res
       return res.status(400).json({ success: false, error: 'Application does not have a live post URL submitted' });
     }
 
-    // Fetch creator's Instagram handle separately to prevent relationship mapping errors
+    // Fetch creator's Instagram handle and OAuth tokens
     let igHandle = null;
+    let creatorToken = null;
+    let creatorIgUserId = null;
+
     if (application.user_id) {
-      const { data: social } = await supabase
-        .from('social_connections')
-        .select('handle')
+      const { data: creatorProfile } = await supabase
+        .from('creators')
+        .select('ig_handle, ig_access_token, ig_user_id')
         .eq('user_id', application.user_id)
-        .eq('platform', 'instagram')
         .maybeSingle();
-      if (social) {
-        igHandle = social.handle;
+
+      if (creatorProfile) {
+        igHandle = creatorProfile.ig_handle;
+        creatorToken = creatorProfile.ig_access_token;
+        creatorIgUserId = creatorProfile.ig_user_id;
       }
+
       if (!igHandle) {
-        const { data: creatorProfile } = await supabase
-          .from('creators')
-          .select('ig_handle')
+        const { data: social } = await supabase
+          .from('social_connections')
+          .select('handle')
           .eq('user_id', application.user_id)
+          .eq('platform', 'instagram')
           .maybeSingle();
-        if (creatorProfile) {
-          igHandle = creatorProfile.ig_handle;
+        if (social) {
+          igHandle = social.handle;
         }
       }
     }
@@ -2912,7 +3372,7 @@ router.post('/api/applications/:applicationId/refresh-insights', async (req, res
     }
 
     // Fetch latest post metrics
-    const metrics = await fetchInstagramPostMetrics(application.post_url, igHandle);
+    const metrics = await fetchInstagramPostMetrics(application.post_url, igHandle, creatorToken, creatorIgUserId);
 
     if (metrics && metrics.success) {
       if (metrics.profileStats && application.user_id) {

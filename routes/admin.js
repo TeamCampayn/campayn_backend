@@ -280,4 +280,153 @@ router.post('/admin/send-invitations', async (req, res) => {
   }
 });
 
+// Admin: Add Creator manually
+router.post('/admin/campaigns/:campaignId/creators/add', async (req, res) => {
+  const { campaignId } = req.params;
+  const { creatorId } = req.body;
+
+  if (!campaignId || !creatorId) {
+    return res.status(400).json({ error: 'Campaign ID and Creator ID are required' });
+  }
+
+  try {
+    // 1. Get Campaign
+    const { data: campaign, error: campaignErr } = await supabase
+      .from('campaigns')
+      .select('*')
+      .eq('id', campaignId)
+      .single();
+
+    if (campaignErr || !campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    // 2. Get Creator details
+    const { data: creator, error: creatorErr } = await supabase
+      .from('creators')
+      .select('*')
+      .eq('id', creatorId)
+      .single();
+
+    if (creatorErr || !creator) {
+      return res.status(404).json({ error: 'Creator not found' });
+    }
+
+    // 3. Add to campaign_creators
+    const { data: selection, error: selectionErr } = await supabase
+      .from('campaign_creators')
+      .upsert({
+        campaign_id: campaignId,
+        creator_id: creatorId,
+        status: 'approved',
+        selection_status: 'selected',
+        brand_response: 'approved'
+      }, { onConflict: 'campaign_id,creator_id' })
+      .select()
+      .single();
+
+    if (selectionErr) throw selectionErr;
+
+    // 4. Ensure legacy campaign exists so application can reference it
+    const cpvRate = campaign.cpv_rate || 2.0;
+    const cpvPaise = Math.round(cpvRate * 100);
+    await ensureLegacyCampaignExists(campaign, cpvPaise, 'active');
+
+    // 5. If creator has user_id, add/update row in applications
+    if (creator.user_id) {
+      const targetCreators = campaign.target_creators_count || 5;
+      const budget = campaign.budget || 100000;
+      const estEarning = Math.round(budget / targetCreators);
+
+      const { error: appErr } = await supabase
+        .from('applications')
+        .upsert({
+          user_id: creator.user_id,
+          campaign_id: campaignId,
+          status: 'approved',
+          estimated_earning_inr: estEarning,
+          is_flagged: false
+        }, { onConflict: 'user_id,campaign_id' });
+
+      if (appErr) {
+        console.error('[ADMIN] Error syncing to applications table:', appErr);
+      }
+    }
+
+    // Log Activity
+    await supabase.from('campaign_activities').insert({
+      campaign_id: campaignId,
+      user_id: 'admin',
+      user_type: 'admin',
+      activity_type: 'creator_added_manually',
+      description: `Creator ${creator.name || creator.ig_handle} added manually by admin`,
+      metadata: { creator_id: creatorId }
+    });
+
+    res.json({ success: true, selection });
+
+  } catch (error) {
+    console.error('Error adding creator:', error);
+    res.status(500).json({ error: 'Failed to add creator', details: error.message });
+  }
+});
+
+// Admin: Remove Creator manually
+router.post('/admin/campaigns/:campaignId/creators/remove', async (req, res) => {
+  const { campaignId } = req.params;
+  const { creatorId } = req.body;
+
+  if (!campaignId || !creatorId) {
+    return res.status(400).json({ error: 'Campaign ID and Creator ID are required' });
+  }
+
+  try {
+    // 1. Get Creator to find user_id if present
+    const { data: creator } = await supabase
+      .from('creators')
+      .select('user_id, name, ig_handle')
+      .eq('id', creatorId)
+      .maybeSingle();
+
+    // 2. Delete from campaign_creators
+    const { error: ccDeleteErr } = await supabase
+      .from('campaign_creators')
+      .delete()
+      .eq('campaign_id', campaignId)
+      .eq('creator_id', creatorId);
+
+    if (ccDeleteErr) throw ccDeleteErr;
+
+    // 3. Delete from applications if user_id is present
+    if (creator?.user_id) {
+      const { error: appDeleteErr } = await supabase
+        .from('applications')
+        .delete()
+        .eq('campaign_id', campaignId)
+        .eq('user_id', creator.user_id);
+
+      if (appDeleteErr) {
+        console.error('[ADMIN] Error deleting from applications table:', appDeleteErr);
+      }
+    }
+
+    // Log Activity
+    await supabase.from('campaign_activities').insert({
+      campaign_id: campaignId,
+      user_id: 'admin',
+      user_type: 'admin',
+      activity_type: 'creator_removed_manually',
+      description: `Creator ${creator?.name || creator?.ig_handle || creatorId} removed manually by admin`,
+      metadata: { creator_id: creatorId }
+    });
+
+    res.json({ success: true, message: 'Creator removed successfully' });
+
+  } catch (error) {
+    console.error('Error removing creator:', error);
+    res.status(500).json({ error: 'Failed to remove creator', details: error.message });
+  }
+});
+
 module.exports = router;
+

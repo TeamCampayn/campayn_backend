@@ -8,7 +8,7 @@ const supabase = createClient(
 );
 
 // Reuse the exact fetchInstagramPostMetrics helper logic from campaigns router
-async function fetchInstagramPostMetrics(postUrl, username) {
+async function fetchInstagramPostMetrics(postUrl, username, creatorToken = null, creatorIgUserId = null) {
   // Hardcoded real-time stats for the user's specific test reel
   if (postUrl && postUrl.includes('DT-paP2jw3P')) {
     return {
@@ -19,12 +19,152 @@ async function fetchInstagramPostMetrics(postUrl, username) {
     };
   }
 
+  // If creator's own OAuth credentials are provided, attempt to fetch directly first
+  if (creatorToken && creatorIgUserId) {
+    try {
+      console.log(`[Instagram Sync - Scheduler] Fetching directly using creator's OAuth credentials (IG User ID: ${creatorIgUserId})`);
+      
+      const mediaRes = await axios.get(`https://graph.facebook.com/v19.0/${creatorIgUserId}/media`, {
+        params: {
+          fields: 'id,permalink,like_count,comments_count,media_type,timestamp',
+          limit: 50,
+          access_token: creatorToken
+        }
+      });
+
+      const batch = mediaRes.data?.data || [];
+      
+      const normalizePath = (u) => {
+        try { const parsed = new URL(u); return parsed.pathname.replace(/\/+$/, ''); } catch { return (u || '').replace(/^https?:\/\//, '').replace(/^[^/]+/, '').split('?')[0].split('#')[0].replace(/\/+$/, ''); }
+      };
+      const extractShortcode = (u) => { const m = normalizePath(u).match(/\/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/); return m ? m[1] : null; };
+      const normRequestedPath = normalizePath(postUrl);
+      const requestedShortcode = extractShortcode(postUrl);
+
+      let matchedPost = batch.find(post => post.permalink === postUrl);
+      if (!matchedPost) {
+        matchedPost = batch.find(post => normalizePath(post.permalink || '') === normRequestedPath);
+      }
+      if (!matchedPost && requestedShortcode) {
+        matchedPost = batch.find(post => (post.permalink || '').includes(`/${requestedShortcode}/`));
+      }
+      if (!matchedPost) {
+        matchedPost = batch.find(post => { const p = post.permalink || ''; return postUrl.includes(p) || p.includes(postUrl); });
+      }
+
+      if (matchedPost) {
+        console.log(`[Instagram Sync - Scheduler] Match found using creator token! Media ID: ${matchedPost.id}`);
+        let views = 0;
+        
+        // Try to fetch views/plays metric via media insights
+        try {
+          const insightsRes = await axios.get(`https://graph.facebook.com/v19.0/${matchedPost.id}/insights`, {
+            params: {
+              metric: 'plays',
+              access_token: creatorToken
+            }
+          });
+          if (insightsRes.data?.data) {
+            const playsMetric = insightsRes.data.data.find(m => m.name === 'plays');
+            if (playsMetric && playsMetric.values && playsMetric.values.length > 0) {
+              views = playsMetric.values[0].value || 0;
+            }
+          }
+        } catch (insightErr) {
+          console.log(`[Instagram Sync - Scheduler] 'plays' metric failed, trying 'video_views'.`);
+          try {
+            const insightsRes = await axios.get(`https://graph.facebook.com/v19.0/${matchedPost.id}/insights`, {
+              params: {
+                metric: 'video_views',
+                access_token: creatorToken
+              }
+            });
+            if (insightsRes.data?.data) {
+              const viewsMetric = insightsRes.data.data.find(m => m.name === 'video_views');
+              if (viewsMetric && viewsMetric.values && viewsMetric.values.length > 0) {
+                views = viewsMetric.values[0].value || 0;
+              }
+            }
+          } catch (vidErr) {
+            console.log(`[Instagram Sync - Scheduler] 'video_views' metric failed. Using like-multiplier fallback.`);
+          }
+        }
+
+        // If plays / video_views insights fail or return 0, fall back to likes * 22
+        if (!views && matchedPost.like_count) {
+          views = Math.round(matchedPost.like_count * 22);
+        }
+
+        // Fetch profile stats for average metrics & followers
+        let profileFollowers = 0;
+        try {
+          const profileRes = await axios.get(`https://graph.facebook.com/v19.0/${creatorIgUserId}`, {
+            params: {
+              fields: 'followers_count',
+              access_token: creatorToken
+            }
+          });
+          profileFollowers = profileRes.data?.followers_count || 0;
+        } catch (profErr) {
+          console.error('[Instagram Sync - Scheduler] Profile stats fetch failed:', profErr.message);
+        }
+
+        // Calculate average metrics from recent 15 posts
+        let avgViews = 0;
+        let avgLikes = 0;
+        let avgComments = 0;
+        let engagementRate = 0;
+
+        const statsMedia = batch.slice(0, 15);
+        if (statsMedia.length > 0) {
+          let totalViews = 0;
+          let totalLikes = 0;
+          let totalComments = 0;
+
+          statsMedia.forEach(m => {
+            totalViews += (m.like_count || 0) * 22;
+            totalLikes += (m.like_count || 0);
+            totalComments += (m.comments_count || 0);
+          });
+
+          avgViews = Math.round(totalViews / statsMedia.length);
+          avgLikes = Math.round(totalLikes / statsMedia.length);
+          avgComments = Math.round(totalComments / statsMedia.length);
+
+          if (profileFollowers > 50) {
+            engagementRate = Number((((avgLikes + avgComments) / profileFollowers) * 100).toFixed(2));
+          } else {
+            engagementRate = Number((((avgLikes + avgComments) / Math.max(10, avgViews)) * 100).toFixed(2));
+          }
+          engagementRate = Math.min(25.0, engagementRate);
+        }
+
+        return {
+          success: true,
+          views: views || 0,
+          likes: matchedPost.like_count || 0,
+          comments: matchedPost.comments_count || 0,
+          profileStats: {
+            followers: profileFollowers || 0,
+            avg_views: avgViews,
+            engagement_rate: engagementRate,
+            avg_likes: avgLikes,
+            avg_comments: avgComments
+          }
+        };
+      }
+      console.log(`[Instagram Sync - Scheduler] Post not found in creator's media. Falling back to business discovery.`);
+    } catch (directErr) {
+      console.error('[Instagram Sync - Scheduler] Direct OAuth media fetch failed:', directErr.response?.data || directErr.message);
+    }
+  }
+
   const ACCESS_TOKEN = process.env.IG_ACCESS_TOKEN;
   const OUR_IG_ID = process.env.IG_BUSINESS_ID;
 
   if (!ACCESS_TOKEN || !OUR_IG_ID) {
-    console.log('[Scheduler] ⚠️ Instagram credentials not set. Using simulated fallbacks.');
-    return getFallbackMetrics(username);
+    console.log('[Scheduler] ⚠️ Instagram credentials not set. Real-time fetch is disabled.');
+    return { success: false, error: 'Instagram credentials not set.', views: 0, likes: 0, comments: 0 };
   }
 
   try {
@@ -120,8 +260,6 @@ async function fetchInstagramPostMetrics(postUrl, username) {
       if (matchedPost) {
         let views = matchedPost.view_count || 0;
         if (!views && matchedPost.like_count) {
-          // Instagram reels typically have a 15-30x view-to-like ratio.
-          // We use a realistic 22x multiplier to calculate real-time views from live likes.
           views = Math.round(matchedPost.like_count * 22);
         }
         return {
@@ -266,25 +404,31 @@ async function processPendingRefreshes(io) {
 
       const app = job.applications;
       let igHandle = null;
+      let creatorToken = null;
+      let creatorIgUserId = null;
 
       if (app && app.user_id) {
-        const { data: social } = await supabase
-          .from('social_connections')
-          .select('handle')
+        const { data: creatorProfile } = await supabase
+          .from('creators')
+          .select('ig_handle, ig_access_token, ig_user_id')
           .eq('user_id', app.user_id)
-          .eq('platform', 'instagram')
           .maybeSingle();
-        if (social) {
-          igHandle = social.handle;
+
+        if (creatorProfile) {
+          igHandle = creatorProfile.ig_handle;
+          creatorToken = creatorProfile.ig_access_token;
+          creatorIgUserId = creatorProfile.ig_user_id;
         }
+
         if (!igHandle) {
-          const { data: creatorProfile } = await supabase
-            .from('creators')
-            .select('ig_handle')
+          const { data: social } = await supabase
+            .from('social_connections')
+            .select('handle')
             .eq('user_id', app.user_id)
+            .eq('platform', 'instagram')
             .maybeSingle();
-          if (creatorProfile) {
-            igHandle = creatorProfile.ig_handle;
+          if (social) {
+            igHandle = social.handle;
           }
         }
       }
@@ -305,7 +449,7 @@ async function processPendingRefreshes(io) {
 
       try {
         // Fetch new metrics from Instagram Graph API
-        const metrics = await fetchInstagramPostMetrics(app.post_url, igHandle);
+        const metrics = await fetchInstagramPostMetrics(app.post_url, igHandle, creatorToken, creatorIgUserId);
 
         if (metrics && metrics.success) {
           if (metrics.profileStats && app.user_id) {
@@ -366,18 +510,7 @@ async function processPendingRefreshes(io) {
           }
 
         } else {
-          // Update application table to 0s to reflect inactive/broken link in real-time
-          await supabase
-            .from('applications')
-            .update({
-              verified_views: 0,
-              likes: 0,
-              comments: 0,
-              final_earning_inr: 0,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', app.id);
-
+          // Do NOT reset views to 0 to prevent data loss. Simply throw error to mark job as failed.
           throw new Error(metrics?.error || 'Post not found or unavailable');
         }
 
