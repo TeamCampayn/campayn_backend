@@ -658,7 +658,8 @@ router.post('/api/brand/wallet/create-deposit-order', async (req, res) => {
             id: `order_mock_wallet_${timeFrag}`,
             amount: Math.round(numericAmount * 100),
             currency,
-            is_sandbox: true
+            is_sandbox: true,
+            debug_gateway_error: gatewayErr?.error || { message: gatewayErr?.message || String(gatewayErr) }
           };
         } else {
           return res.status(500).json({
@@ -676,7 +677,8 @@ router.post('/api/brand/wallet/create-deposit-order', async (req, res) => {
         id: order.id,
         amount: order.amount,
         currency: order.currency,
-        is_sandbox: order.is_sandbox || false
+        is_sandbox: order.is_sandbox || false,
+        debug_gateway_error: order.debug_gateway_error
       }
     });
 
