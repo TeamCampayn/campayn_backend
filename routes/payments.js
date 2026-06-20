@@ -9,13 +9,9 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// Clean Razorpay keys if they have quotes or whitespace
-if (process.env.RAZORPAY_KEY_ID) {
-  process.env.RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID.trim().replace(/^["']|["']$/g, '');
-}
-if (process.env.RAZORPAY_KEY_SECRET) {
-  process.env.RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET.trim().replace(/^["']|["']$/g, '');
-}
+// Force correct live Razorpay credentials to resolve keys issue on Render
+process.env.RAZORPAY_KEY_ID = 'rzp_live_T3kVFyGMu3jhtP';
+process.env.RAZORPAY_KEY_SECRET = 'FjQExnCUf6Zg0v27PAe41b2x';
 
 // Lazy initialize Razorpay to surface configuration errors gracefully
 let razorpay = null;
@@ -110,8 +106,9 @@ router.post('/api/campaigns/:campaignId/create-payment-order', async (req, res) 
       
       const isAuthError = gatewayErr.statusCode === 401 || (gatewayErr.error && gatewayErr.error.code === 'BAD_REQUEST_ERROR' && gatewayErr.error.description === 'Authentication failed');
       const isDevOrSandbox = process.env.NODE_ENV === 'development' || process.env.PAYMENT_SANDBOX === 'true';
+      const isLiveKey = process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_ID.startsWith('rzp_live');
 
-      if (isAuthError || isDevOrSandbox) {
+      if (!isLiveKey && (isAuthError || isDevOrSandbox)) {
         console.warn('⚠️ Razorpay Authentication Failed or Sandbox Mode Enabled. Falling back to Sandbox Mock Order.');
         order = {
           id: `order_mock_${shortCampaign}_${timeFrag}`,
@@ -659,8 +656,9 @@ router.post('/api/brand/wallet/create-deposit-order', async (req, res) => {
         console.error('Razorpay order creation error for wallet deposit:', gatewayErr);
         const isAuthError = gatewayErr.statusCode === 401 || (gatewayErr.error && gatewayErr.error.code === 'BAD_REQUEST_ERROR' && gatewayErr.error.description === 'Authentication failed');
         const isDevOrSandbox = process.env.NODE_ENV === 'development' || process.env.PAYMENT_SANDBOX === 'true';
+        const isLiveKey = process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_ID.startsWith('rzp_live');
 
-        if (isAuthError || isDevOrSandbox) {
+        if (!isLiveKey && (isAuthError || isDevOrSandbox)) {
           console.warn('⚠️ Razorpay Authentication Failed or Sandbox Mode. Falling back to Sandbox Mock Order.');
           order = {
             id: `order_mock_wallet_${timeFrag}`,
