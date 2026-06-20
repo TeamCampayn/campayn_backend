@@ -9,6 +9,14 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
+// Clean Razorpay keys if they have quotes or whitespace
+if (process.env.RAZORPAY_KEY_ID) {
+  process.env.RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID.trim().replace(/^["']|["']$/g, '');
+}
+if (process.env.RAZORPAY_KEY_SECRET) {
+  process.env.RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET.trim().replace(/^["']|["']$/g, '');
+}
+
 // Lazy initialize Razorpay to surface configuration errors gracefully
 let razorpay = null;
 function getRazorpay() {
