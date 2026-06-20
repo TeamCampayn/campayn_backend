@@ -388,7 +388,9 @@ app.get('/health', (req, res) => {
       key_secret_length: process.env.RAZORPAY_KEY_SECRET ? process.env.RAZORPAY_KEY_SECRET.length : 0,
       node_env: process.env.NODE_ENV,
       is_key_id_match: process.env.RAZORPAY_KEY_ID === 'rzp_live_T3kVFyGMu3jhtP',
-      is_key_secret_match: process.env.RAZORPAY_KEY_SECRET === 'FjQExnCUf6Zg0v27PAe41b2x'
+      is_key_secret_match: process.env.RAZORPAY_KEY_SECRET === 'FjQExnCUf6Zg0v27PAe41b2x',
+      key_id_masked: process.env.RAZORPAY_KEY_ID ? `${process.env.RAZORPAY_KEY_ID.slice(0, 10)}...${process.env.RAZORPAY_KEY_ID.slice(-4)}` : null,
+      key_secret_masked: process.env.RAZORPAY_KEY_SECRET ? `${process.env.RAZORPAY_KEY_SECRET.slice(0, 4)}...${process.env.RAZORPAY_KEY_SECRET.slice(-4)}` : null
     }
   });
 });
