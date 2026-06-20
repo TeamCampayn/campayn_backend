@@ -379,7 +379,13 @@ app.get('/health', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     activeRooms: activeRooms.size,
-    connectedUsers: userSockets.size
+    connectedUsers: userSockets.size,
+    razorpay: {
+      has_key_id: !!process.env.RAZORPAY_KEY_ID,
+      key_id_prefix: process.env.RAZORPAY_KEY_ID ? process.env.RAZORPAY_KEY_ID.slice(0, 8) : null,
+      has_key_secret: !!process.env.RAZORPAY_KEY_SECRET,
+      node_env: process.env.NODE_ENV
+    }
   });
 });
 
