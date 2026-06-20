@@ -382,8 +382,10 @@ app.get('/health', (req, res) => {
     connectedUsers: userSockets.size,
     razorpay: {
       has_key_id: !!process.env.RAZORPAY_KEY_ID,
+      key_id_length: process.env.RAZORPAY_KEY_ID ? process.env.RAZORPAY_KEY_ID.length : 0,
       key_id_prefix: process.env.RAZORPAY_KEY_ID ? process.env.RAZORPAY_KEY_ID.slice(0, 8) : null,
       has_key_secret: !!process.env.RAZORPAY_KEY_SECRET,
+      key_secret_length: process.env.RAZORPAY_KEY_SECRET ? process.env.RAZORPAY_KEY_SECRET.length : 0,
       node_env: process.env.NODE_ENV
     }
   });
