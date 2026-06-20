@@ -599,4 +599,235 @@ router.get('/api/brand/wallet', async (req, res) => {
   }
 });
 
+// Create Razorpay Order for Brand Wallet Deposit
+router.post('/api/brand/wallet/create-deposit-order', async (req, res) => {
+  try {
+    const { brandId, amount, currency = 'INR' } = req.body;
+
+    if (!brandId) return res.status(400).json({ error: 'Brand ID is required' });
+    const numericAmount = Number(amount);
+    if (!numericAmount || numericAmount <= 0) {
+      return res.status(400).json({ error: 'Valid amount is required' });
+    }
+
+    // Get brand details to confirm it exists
+    const { data: brand, error: brandErr } = await supabase
+      .from('brands')
+      .select('id, brand_name')
+      .eq('id', brandId)
+      .single();
+
+    if (brandErr || !brand) {
+      return res.status(404).json({ error: 'Brand not found' });
+    }
+
+    const rp = getRazorpay();
+    const timeFrag = Date.now().toString().slice(-6);
+
+    let order;
+    if (!rp) {
+      console.warn('⚠️ Razorpay not configured. Creating Sandbox Mock Order.');
+      order = {
+        id: `order_mock_wallet_${timeFrag}`,
+        amount: Math.round(numericAmount * 100),
+        currency,
+        is_sandbox: true
+      };
+    } else {
+      const options = {
+        amount: Math.round(numericAmount * 100),
+        currency,
+        receipt: `wallet_${brandId.replace(/-/g, '').slice(0, 12)}_${timeFrag}`,
+        notes: {
+          brand_id: brandId,
+          brand_name: brand.brand_name,
+          type: 'wallet_deposit'
+        }
+      };
+
+      try {
+        order = await rp.orders.create(options);
+      } catch (gatewayErr) {
+        console.error('Razorpay order creation error for wallet deposit:', gatewayErr);
+        const isAuthError = gatewayErr.statusCode === 401 || (gatewayErr.error && gatewayErr.error.code === 'BAD_REQUEST_ERROR' && gatewayErr.error.description === 'Authentication failed');
+        const isDevOrSandbox = process.env.NODE_ENV === 'development' || process.env.PAYMENT_SANDBOX === 'true';
+
+        if (isAuthError || isDevOrSandbox) {
+          console.warn('⚠️ Razorpay Authentication Failed or Sandbox Mode. Falling back to Sandbox Mock Order.');
+          order = {
+            id: `order_mock_wallet_${timeFrag}`,
+            amount: Math.round(numericAmount * 100),
+            currency,
+            is_sandbox: true
+          };
+        } else {
+          return res.status(500).json({
+            success: false,
+            error: 'Failed to create payment order',
+            gateway_details: gatewayErr?.error || { message: gatewayErr.message }
+          });
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      order: {
+        id: order.id,
+        amount: order.amount,
+        currency: order.currency,
+        is_sandbox: order.is_sandbox || false
+      }
+    });
+
+  } catch (error) {
+    console.error('Error creating Razorpay order for brand wallet:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create payment order',
+      details: error.message
+    });
+  }
+});
+
+// Verify Razorpay Deposit and Credit Brand Wallet
+router.post('/api/brand/wallet/verify-deposit', async (req, res) => {
+  try {
+    const {
+      brandId,
+      amount,
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature
+    } = req.body;
+
+    if (!brandId) return res.status(400).json({ error: 'Brand ID is required' });
+    const depositAmount = Number(amount);
+    if (!depositAmount || depositAmount <= 0) return res.status(400).json({ error: 'Valid amount is required' });
+
+    const isMock = razorpay_order_id.startsWith('order_mock_');
+
+    if (!isMock) {
+      // Verify signature
+      const generated_signature = crypto
+        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+        .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+        .digest('hex');
+
+      if (generated_signature !== razorpay_signature) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid payment signature'
+        });
+      }
+
+      // Fetch payment details from Razorpay to ensure it is captured
+      const rp = getRazorpay();
+      if (!rp) {
+        return res.status(500).json({ success: false, error: 'Payment gateway not configured' });
+      }
+      const payment = await rp.payments.fetch(razorpay_payment_id);
+      if (payment.status !== 'captured' && payment.status !== 'authorized') {
+        return res.status(400).json({
+          success: false,
+          error: `Payment status is ${payment.status}, expected captured or authorized`
+        });
+      }
+    }
+
+    // Check if the transaction with this reference_id was already processed to avoid double crediting
+    const { data: existingTx, error: txCheckErr } = await supabase
+      .from('brand_transactions')
+      .select('id')
+      .eq('reference_id', razorpay_payment_id)
+      .maybeSingle();
+
+    if (txCheckErr) throw txCheckErr;
+    if (existingTx) {
+      return res.json({
+        success: true,
+        message: 'Deposit already processed'
+      });
+    }
+
+    // 1. Get current brand wallet or initialize it
+    let { data: wallet, error: walletErr } = await supabase
+      .from('brand_wallets')
+      .select('id, balance, brand_id')
+      .eq('brand_id', brandId)
+      .single();
+
+    if (walletErr && walletErr.code !== 'PGRST116') throw walletErr;
+
+    let updatedWallet;
+    if (wallet) {
+      const { data: updated, error: updateErr } = await supabase
+        .from('brand_wallets')
+        .update({
+          balance: Number(wallet.balance) + depositAmount,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', wallet.id)
+        .select('*')
+        .single();
+
+      if (updateErr) throw updateErr;
+      updatedWallet = updated;
+    } else {
+      const { data: inserted, error: insertErr } = await supabase
+        .from('brand_wallets')
+        .insert({
+          brand_id: brandId,
+          balance: depositAmount,
+          currency: 'INR',
+          updated_at: new Date().toISOString()
+        })
+        .select('*')
+        .single();
+
+      if (insertErr) throw insertErr;
+      updatedWallet = inserted;
+    }
+
+    // 2. Record Transaction
+    const { error: transErr } = await supabase
+      .from('brand_transactions')
+      .insert({
+        brand_id: brandId,
+        amount: depositAmount,
+        type: 'topup',
+        status: 'completed',
+        reference_id: razorpay_payment_id,
+        description: isMock ? 'Wallet topup via Sandbox Simulation' : 'Wallet topup via Razorpay'
+      });
+
+    if (transErr) throw transErr;
+
+    // 3. Emit real-time Socket.IO notification if mounted
+    if (req.io) {
+      const { data: brandData } = await supabase
+        .from('brands')
+        .select('user_id')
+        .eq('id', brandId)
+        .single();
+        
+      if (brandData && brandData.user_id) {
+        req.io.to(`brand_${brandData.user_id}`).emit('wallet_update', {
+          balance: updatedWallet.balance
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Deposit successful',
+      wallet: updatedWallet
+    });
+
+  } catch (error) {
+    console.error('Error verifying brand wallet deposit:', error);
+    res.status(500).json({ error: 'Failed to process deposit transaction' });
+  }
+});
+
 module.exports = router;

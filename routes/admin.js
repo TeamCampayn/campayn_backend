@@ -428,5 +428,121 @@ router.post('/admin/campaigns/:campaignId/creators/remove', async (req, res) => 
   }
 });
 
+// Admin: Disburse Funds (Release Escrow Payout)
+router.post('/admin/disburse-funds', async (req, res) => {
+  const { applicationId } = req.body;
+
+  if (!applicationId) {
+    return res.status(400).json({ error: 'Application ID is required' });
+  }
+
+  try {
+    // Call the Postgres RPC function
+    const { error: rpcError } = await supabase.rpc('disburse_creator_payout', {
+      p_application_id: applicationId
+    });
+
+    if (rpcError) {
+      console.error('[ADMIN Payout] RPC Error:', rpcError);
+      return res.status(400).json({ error: rpcError.message || 'Failed to disburse payout' });
+    }
+
+    // Payout was successful! Fetch application details to broadcast Socket.IO updates
+    const { data: application, error: fetchErr } = await supabase
+      .from('applications')
+      .select('*, legacy_campaigns(created_by, title), profiles(display_name)')
+      .eq('id', applicationId)
+      .maybeSingle();
+
+    if (fetchErr || !application) {
+      console.error('[ADMIN Payout] Fetch application post-disbursement failed:', fetchErr);
+    } else {
+      const creatorUserId = application.user_id;
+      const brandUserId = application.legacy_campaigns?.created_by;
+      const amount = application.final_earning_inr;
+
+      // Broadcast real-time Socket.IO updates to creator and brand
+      if (req.io) {
+        if (creatorUserId) {
+          req.io.to(`user_${creatorUserId}`).emit('wallet_update', {
+            type: 'payout_received',
+            applicationId,
+            amount,
+            title: application.legacy_campaigns?.title
+          });
+        }
+        if (brandUserId) {
+          req.io.to(`brand_${brandUserId}`).emit('wallet_update', {
+            type: 'payout_released',
+            applicationId,
+            amount,
+            title: application.legacy_campaigns?.title
+          });
+        }
+      }
+    }
+
+    res.json({ success: true, message: 'Payout released successfully' });
+
+  } catch (error) {
+    console.error('[ADMIN Payout] Connection error:', error);
+    res.status(500).json({ error: 'Failed to disburse funds due to server error', details: error.message });
+  }
+});
+
+// Admin: Process Creator Withdrawal (Paid, Processing, Failed)
+router.post('/admin/process-withdrawal', async (req, res) => {
+  const { withdrawalId, status, reference } = req.body;
+
+  if (!withdrawalId || !status) {
+    return res.status(400).json({ error: 'Withdrawal ID and Status are required' });
+  }
+
+  try {
+    // Call the Postgres RPC function
+    const { error: rpcError } = await supabase.rpc('process_creator_withdrawal', {
+      p_withdrawal_id: withdrawalId,
+      p_status: status,
+      p_reference: reference || null
+    });
+
+    if (rpcError) {
+      console.error('[ADMIN Payout] process_creator_withdrawal RPC Error:', rpcError);
+      return res.status(400).json({ error: rpcError.message || 'Failed to process withdrawal' });
+    }
+
+    // Fetch withdrawal details to broadcast Socket.IO updates if needed
+    const { data: withdrawal, error: fetchErr } = await supabase
+      .from('withdrawals')
+      .select('*, profiles(display_name)')
+      .eq('id', withdrawalId)
+      .maybeSingle();
+
+    if (fetchErr || !withdrawal) {
+      console.error('[ADMIN Payout] Fetch withdrawal post-processing failed:', fetchErr);
+    } else {
+      const creatorUserId = withdrawal.user_id;
+      const amount = withdrawal.amount_inr;
+
+      // Broadcast real-time Socket.IO updates to creator
+      if (req.io && creatorUserId) {
+        req.io.to(`user_${creatorUserId}`).emit('wallet_update', {
+          type: 'withdrawal_status_updated',
+          withdrawalId,
+          amount,
+          status: withdrawal.status,
+          destination: withdrawal.destination_value
+        });
+      }
+    }
+
+    res.json({ success: true, message: `Withdrawal successfully marked as ${status}` });
+
+  } catch (error) {
+    console.error('[ADMIN Payout] Connection error:', error);
+    res.status(500).json({ error: 'Failed to process withdrawal due to server error', details: error.message });
+  }
+});
+
 module.exports = router;
 
