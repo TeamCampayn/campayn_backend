@@ -9,24 +9,13 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// Load and sanitize Razorpay keys with safe live fallback to resolve keys issue on Render
-let keyId = process.env.RAZORPAY_KEY_ID;
-let keySecret = process.env.RAZORPAY_KEY_SECRET;
-
-if (keyId && keyId.trim()) {
-  keyId = keyId.trim().replace(/^["']|["']$/g, '');
-} else {
-  keyId = 'rzp_live_T3kVFyGMu3jhtP';
+// Clean Razorpay keys if they have quotes or whitespace (common on Render/Windows env configurations)
+if (process.env.RAZORPAY_KEY_ID) {
+  process.env.RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID.trim().replace(/^["']|["']$/g, '');
 }
-
-if (keySecret && keySecret.trim()) {
-  keySecret = keySecret.trim().replace(/^["']|["']$/g, '');
-} else {
-  keySecret = 'FjQExnCUf6Zg0v27PAe41b2x';
+if (process.env.RAZORPAY_KEY_SECRET) {
+  process.env.RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET.trim().replace(/^["']|["']$/g, '');
 }
-
-process.env.RAZORPAY_KEY_ID = keyId;
-process.env.RAZORPAY_KEY_SECRET = keySecret;
 
 // Lazy initialize Razorpay to surface configuration errors gracefully
 let razorpay = null;
