@@ -158,6 +158,7 @@ router.post('/api/campaigns/:campaignId/create-payment-order', async (req, res) 
         receipt: order.receipt,
         is_sandbox: order.is_sandbox || false
       },
+      key_id: process.env.RAZORPAY_KEY_ID || null,
       payment_record_id: paymentRecord?.id
     });
 
@@ -689,7 +690,8 @@ router.post('/api/brand/wallet/create-deposit-order', async (req, res) => {
         currency: order.currency,
         is_sandbox: order.is_sandbox || false,
         debug_gateway_error: order.debug_gateway_error
-      }
+      },
+      key_id: process.env.RAZORPAY_KEY_ID || null
     });
 
   } catch (error) {
